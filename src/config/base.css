@@ -1,0 +1,80 @@
+/*
+ * Base styles. All colors come from CSS custom properties set by
+ * applyTheme() in tokens.ts — no hardcoded colors below this line
+ * except the pre-theme fallback on :root, which must match Ember so
+ * no bright frame can ever appear before the theme applies.
+ */
+
+:root {
+  /* Ember fallbacks — guard against any pre-JS flash */
+  --color-surround: #12100e;
+  --color-page: #12100e;
+  --color-raised: #191611;
+  --color-text-primary: #c8bba8;
+  --color-text-secondary: #8f8372;
+  --color-accent: #b18452;
+  --color-selection: #5a452d;
+  --color-hairline: #2a241d;
+  --color-focus: #b18452;
+
+  --radius-small: 6px;
+  --radius-large: 12px;
+
+  --font-ui: "Inter", "Noto Sans", system-ui, sans-serif;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="paper"] {
+  color-scheme: light;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-surround);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+::selection {
+  background: var(--color-selection);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-small);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

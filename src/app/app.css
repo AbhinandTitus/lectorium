@@ -1,0 +1,23 @@
+.space-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: var(--color-surround);
+}
+
+.space-placeholder h1 {
+  font-size: 1.4rem;
+  font-weight: 500;
+}
+
+.space-placeholder p {
+  color: var(--color-text-secondary);
+}
+
+.space-placeholder button {
+  margin-top: 1rem;
+  color: var(--color-accent);
+}
