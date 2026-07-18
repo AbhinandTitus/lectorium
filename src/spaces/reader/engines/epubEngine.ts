@@ -178,10 +178,15 @@ export class EpubEngine implements ReaderEngine {
 
     this.container = args.container;
 
-    // bundled fonts (incl. Malayalam) must exist inside each chapter iframe
-    this.rendition.hooks.content.register((contents: Contents) =>
-      contents.addStylesheet(`${window.location.origin}/reader-fonts.css`),
-    );
+    // Bundled fonts AND our theme are injected through the content hook — the
+    // one mechanism that reliably fires for every chapter render (epub.js's
+    // themes API / getContents timing is unreliable in the packaged build,
+    // which left the page transparent → white). A transparent chapter renders
+    // white, so this is what guarantees Ember is actually dark.
+    this.rendition.hooks.content.register((contents: Contents) => {
+      void contents.addStylesheet(`${window.location.origin}/reader-fonts.css`);
+      this.injectThemeInto(contents.document);
+    });
 
     // selection → toolbar. epub.js emits "selected" with the CFI range;
     // clearing is watched via selectionchange inside each chapter document.
@@ -374,68 +379,65 @@ export class EpubEngine implements ReaderEngine {
     this.injectContentStyles();
   }
 
-  /** One combined rule set — epub.js replaces the default theme wholesale. */
-  private injectContentStyles(): void {
-    if (!this.rendition || !this.typography) return;
+  /** The reading-theme CSS injected into every chapter document. */
+  private themeCss(): string {
     const t = this.typography;
     const palette = themes[this.theme];
-    // Malayalam always uses its script-aware stack; Latin content honors the
-    // calibrated/preset font from typography settings.
     const family =
       this.language && stackFor(this.language) !== stackFor(null)
         ? stackFor(this.language)
-        : t.fontFamily;
-    this.rendition.themes.default({
-      // Paint the page color on the root and body, and force EVERY element's
-      // background transparent so a publisher/Calibre wrapper (which often sets
-      // a light background of its own) can never cover the theme — this is what
-      // made Ember show a white page on some displays.
-      "*": {
-        "background-color": "transparent !important",
-      },
-      html: {
-        background: `${palette.page} !important`,
-      },
-      body: {
-        "font-family": `${family} !important`,
-        "font-size": `${t.fontSizePx}px !important`,
-        "line-height": `${t.lineHeight} !important`,
-        color: `${palette.textPrimary} !important`,
-        background: `${palette.page} !important`,
-        "text-align": "left",
-        hyphens: "auto",
-      },
-      p: {
-        "line-height": `${t.lineHeight} !important`,
-      },
-      // warm, underlined links — never bright blue at night, and
-      // distinguishable by more than color (PRODUCT.md)
-      a: {
-        color: `${palette.accent} !important`,
-        "text-decoration": "underline",
-        "text-underline-offset": "2px",
-      },
-      "::selection": {
-        background: palette.selection,
-      },
-    });
-    this.rendition.themes.fontSize(`${t.fontSizePx}px`);
+        : (t?.fontFamily ?? "Georgia, serif");
+    const fontSize = t?.fontSizePx ?? 20;
+    const lineHeight = t?.lineHeight ?? 1.58;
+    // Force EVERY element's background transparent so a publisher/Calibre
+    // wrapper (which often ships its own light background) can never cover the
+    // theme; paint the page color authoritatively on html and body. A chapter
+    // that isn't themed renders transparent → white, so this is load-bearing.
+    return `
+      html { background: ${palette.page} !important; color-scheme: ${this.theme === "paper" ? "light" : "dark"}; }
+      * { background-color: transparent !important; }
+      body {
+        background: ${palette.page} !important;
+        color: ${palette.textPrimary} !important;
+        font-family: ${family} !important;
+        font-size: ${fontSize}px !important;
+        line-height: ${lineHeight} !important;
+        text-align: left;
+        hyphens: auto;
+      }
+      p { line-height: ${lineHeight} !important; }
+      a { color: ${palette.accent} !important; text-decoration: underline; text-underline-offset: 2px; }
+      ::selection { background: ${palette.selection}; }
+      img, svg, video { forced-color-adjust: none; }
+    `;
+  }
 
-    // epub.js's themes API does not reliably re-inject into a chapter that is
-    // already rendered, so a live theme switch can leave the previous page
-    // colors behind. Poke each live document (and the iframe element itself)
-    // directly — belt and suspenders so no white can ever show through.
+  /** Upsert the theme <style> into a chapter document (idempotent). */
+  private injectThemeInto(doc: Document): void {
+    try {
+      if (!doc?.head) return;
+      let style = doc.getElementById("lectorium-theme") as HTMLStyleElement | null;
+      if (!style) {
+        style = doc.createElement("style");
+        style.id = "lectorium-theme";
+        doc.head.appendChild(style);
+      }
+      style.textContent = this.themeCss();
+    } catch {
+      // never let a styling poke break reading
+    }
+  }
+
+  /** Apply the current theme/typography to every live chapter document. */
+  private injectContentStyles(): void {
+    if (!this.rendition) return;
+    const palette = themes[this.theme];
     try {
       const iframe = this.container?.querySelector("iframe");
       if (iframe) iframe.style.background = palette.page;
       const contents = this.rendition.getContents() as unknown as Array<{ document: Document }>;
-      for (const c of Array.isArray(contents) ? contents : [contents]) {
-        const doc = c.document;
-        if (!doc?.documentElement) continue;
-        doc.documentElement.style.background = palette.page;
-        doc.body.style.background = palette.page;
-        doc.body.style.color = palette.textPrimary;
-      }
+      const list = Array.isArray(contents) ? contents : contents ? [contents] : [];
+      for (const c of list) this.injectThemeInto(c.document);
     } catch {
       // never let a styling poke break reading
     }
