@@ -2,6 +2,11 @@
 
 All notable changes to Lectorium, grouped by milestone. This project is pre-1.0; versions are milestone tags rather than semantic releases. Dates are the build dates on the development machine.
 
+## Fixes — 2026-07-18
+
+- **Mouse-wheel page turning.** The Reader had keyboard and click-zone turns but no wheel handler, and for EPUB the chapter iframe swallowed wheel events entirely. Added throttled wheel-to-flip (one gesture = one page) across all three engines: EPUB forwards wheel from inside the iframe; PDF and text flip via the reader stage. Disabled in PDF Reflow, which genuinely scrolls. Verified live: EPUB CFI and text pagination both advance/retreat on wheel, the throttle collapses a rapid double-wheel to one turn, and tiny deltas are ignored.
+- Added `scripts/create-shortcut.ps1` to generate a pinnable Desktop launcher for the built executable.
+
 ## Milestone 5 — Hardening and Windows handoff — 2026-07-18 (in progress)
 
 - **Backup & restore:** on-demand atomic backup (VACUUM INTO + rotation); restore validates the file is a compatible Lectorium database, backs up current data first, then atomically replaces and re-migrates.

@@ -72,6 +72,12 @@ export interface ReaderEngine {
   setHighlights(annotations: EngineAnnotation[]): void;
   /** footnote reference activated (EPUB); no-op elsewhere */
   onFootnote?(handler: (note: { text: string; rect: DOMRect }) => void): void;
+  /**
+   * Register a wheel-to-flip forwarder. Needed for engines whose content
+   * lives in an iframe (EPUB), where wheel events never reach the host DOM.
+   * The handler receives the raw wheel deltaY; the caller throttles.
+   */
+  onWheel?(handler: (deltaY: number) => void): void;
 
   // --- PDF-only presentation controls (undefined on other engines) ---
   /** analyze suitability for the reversible Reflow view */

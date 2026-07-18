@@ -181,6 +181,7 @@ export function Reader() {
           setSelection(sel);
         });
         engine.onFootnote?.((note) => setFootnote(note));
+        engine.onWheel?.((deltaY) => wheelFlipRef.current(deltaY));
         await engine.open({
           container,
           book: detail,
@@ -262,6 +263,28 @@ export function Reader() {
     },
     [dismissRibbon, refreshHighlights],
   );
+
+  // Wheel-to-flip. One wheel gesture = one page turn (trackpads emit many
+  // small deltas), so we throttle with a short cooldown. In PDF Reflow the
+  // page genuinely scrolls, so wheel-flip is disabled there.
+  const lastFlip = useRef(0);
+  const wheelFlip = useCallback(
+    (deltaY: number) => {
+      if (pdfView === "reflow") return;
+      if (Math.abs(deltaY) < 4) return;
+      const now = Date.now();
+      if (now - lastFlip.current < 380) return;
+      lastFlip.current = now;
+      turn(deltaY > 0 ? 1 : -1);
+    },
+    [turn, pdfView],
+  );
+  // The EPUB engine forwards iframe wheel events; keep it pointed at the
+  // latest handler without re-opening the book.
+  const wheelFlipRef = useRef(wheelFlip);
+  useEffect(() => {
+    wheelFlipRef.current = wheelFlip;
+  }, [wheelFlip]);
 
   // ---- annotation actions ----
 
@@ -479,7 +502,7 @@ export function Reader() {
           <button onClick={closeBook}>Back to the room</button>
         </div>
       ) : (
-        <div className="reader-stage">
+        <div className="reader-stage" onWheel={(e) => wheelFlip(e.deltaY)}>
           <button
             className="reader-turn reader-turn-prev"
             onClick={() => turn(-1)}

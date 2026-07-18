@@ -113,6 +113,7 @@ export class EpubEngine implements ReaderEngine {
   private theme: ThemeName = "ember";
   private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
   private footnoteHandler: ((note: { text: string; rect: DOMRect }) => void) | null = null;
+  private wheelHandler: ((deltaY: number) => void) | null = null;
   private appliedHighlights = new Map<string, string>(); // id -> cfi
   private container: HTMLElement | null = null;
 
@@ -219,6 +220,20 @@ export class EpubEngine implements ReaderEngine {
           }
         },
         true,
+      );
+
+      // Wheel-to-flip: the chapter iframe swallows wheel events, so forward
+      // them to the shell. Paginated content does not scroll, so we can
+      // safely turn the page on a wheel gesture.
+      contents.document.addEventListener(
+        "wheel",
+        (e: WheelEvent) => {
+          if (this.wheelHandler) {
+            e.preventDefault();
+            this.wheelHandler(e.deltaY);
+          }
+        },
+        { passive: false },
       );
     });
 
@@ -397,6 +412,10 @@ export class EpubEngine implements ReaderEngine {
 
   onFootnote(handler: (note: { text: string; rect: DOMRect }) => void): void {
     this.footnoteHandler = handler;
+  }
+
+  onWheel(handler: (deltaY: number) => void): void {
+    this.wheelHandler = handler;
   }
 
   setHighlights(annotations: EngineAnnotation[]): void {

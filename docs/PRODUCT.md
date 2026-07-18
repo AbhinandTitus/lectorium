@@ -69,6 +69,8 @@ At most three books on the desk: one **Current**, one **Companion**, one **Short
 
 ## Reading modes (per book)
 
+Page turns: arrow keys / PageUp-Down / Space, the invisible left-right edge zones, or the **mouse wheel** (one gesture = one page; disabled in PDF Reflow, which scrolls).
+
 - **Story** — pure immersion. No prompts. Annotation and dictionary available on selection.
 - **Study** — chapter landmarks, marginalia, optional end-of-chapter prompt ("What stayed with you?" / "One idea worth testing?"), search, Commonplace tools.
 - **Contemplative** — deliberately small passage; Read / Reflect / Respond / Rest. No timer.
