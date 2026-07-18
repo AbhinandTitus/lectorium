@@ -380,49 +380,71 @@ export class EpubEngine implements ReaderEngine {
   }
 
   /** The reading-theme CSS injected into every chapter document. */
-  private themeCss(): string {
-    const t = this.typography;
-    const palette = themes[this.theme];
-    const family =
-      this.language && stackFor(this.language) !== stackFor(null)
-        ? stackFor(this.language)
-        : (t?.fontFamily ?? "Georgia, serif");
-    const fontSize = t?.fontSizePx ?? 20;
-    const lineHeight = t?.lineHeight ?? 1.58;
-    // Force EVERY element's background transparent so a publisher/Calibre
-    // wrapper (which often ships its own light background) can never cover the
-    // theme; paint the page color authoritatively on html and body. A chapter
-    // that isn't themed renders transparent → white, so this is load-bearing.
+  /** Cosmetic rules delivered as an EXTERNAL stylesheet (CSP-permitted). */
+  private themeLinkCss(palette: (typeof themes)[keyof typeof themes], lineHeight: number): string {
+    // A publisher/Calibre wrapper often ships its own light background; force
+    // every element transparent so only html/body (painted below via CSSOM)
+    // show the page color. Keep link/selection colors on-theme.
     return `
-      html { background: ${palette.page} !important; color-scheme: ${this.theme === "paper" ? "light" : "dark"}; }
       * { background-color: transparent !important; }
-      body {
-        background: ${palette.page} !important;
-        color: ${palette.textPrimary} !important;
-        font-family: ${family} !important;
-        font-size: ${fontSize}px !important;
-        line-height: ${lineHeight} !important;
-        text-align: left;
-        hyphens: auto;
-      }
-      p { line-height: ${lineHeight} !important; }
       a { color: ${palette.accent} !important; text-decoration: underline; text-underline-offset: 2px; }
+      p { line-height: ${lineHeight} !important; }
       ::selection { background: ${palette.selection}; }
       img, svg, video { forced-color-adjust: none; }
     `;
   }
 
-  /** Upsert the theme <style> into a chapter document (idempotent). */
+  /**
+   * Theme a chapter document. The packaged WebView2 inherits the app CSP into
+   * this same-origin iframe, and that CSP has no `style-src 'unsafe-inline'`, so
+   * an injected inline `<style>` (or epub.js themes.default) is parsed but never
+   * applied — the transparent document then renders WHITE. Two CSP-safe channels
+   * fix this: (1) CSSOM writes (`el.style.x = y`) are exempt from CSP and carry
+   * the load-bearing background/text/font; (2) an EXTERNAL blob stylesheet is
+   * permitted (same mechanism that loads the bundled fonts) and carries the
+   * cosmetic rules. Idempotent.
+   */
   private injectThemeInto(doc: Document): void {
     try {
-      if (!doc?.head) return;
-      let style = doc.getElementById("lectorium-theme") as HTMLStyleElement | null;
-      if (!style) {
-        style = doc.createElement("style");
-        style.id = "lectorium-theme";
-        doc.head.appendChild(style);
+      if (!doc?.documentElement) return;
+      const palette = themes[this.theme];
+      const t = this.typography;
+      const family =
+        this.language && stackFor(this.language) !== stackFor(null)
+          ? stackFor(this.language)
+          : (t?.fontFamily ?? "Georgia, serif");
+      const fontSize = t?.fontSizePx ?? 20;
+      const lineHeight = t?.lineHeight ?? 1.58;
+      const dark = this.theme !== "paper";
+
+      // (1) CSSOM — immune to CSP, applies synchronously (no white flash).
+      const html = doc.documentElement;
+      html.style.setProperty("background", palette.page, "important");
+      html.style.colorScheme = dark ? "dark" : "light";
+      const body = doc.body;
+      if (body) {
+        body.style.setProperty("background", palette.page, "important");
+        body.style.setProperty("color", palette.textPrimary, "important");
+        body.style.setProperty("font-family", family, "important");
+        body.style.setProperty("font-size", `${fontSize}px`, "important");
+        body.style.setProperty("line-height", String(lineHeight), "important");
       }
-      style.textContent = this.themeCss();
+
+      // (2) External blob stylesheet for the cosmetic rules.
+      if (doc.head) {
+        const css = this.themeLinkCss(palette, lineHeight);
+        const url = URL.createObjectURL(new Blob([css], { type: "text/css" }));
+        let link = doc.getElementById("lectorium-theme") as HTMLLinkElement | null;
+        if (!link) {
+          link = doc.createElement("link");
+          link.id = "lectorium-theme";
+          link.rel = "stylesheet";
+          doc.head.appendChild(link);
+        } else if (link.href.startsWith("blob:")) {
+          URL.revokeObjectURL(link.href);
+        }
+        link.href = url;
+      }
     } catch {
       // never let a styling poke break reading
     }
