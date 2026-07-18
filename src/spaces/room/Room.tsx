@@ -1,73 +1,121 @@
+import { lazy, Suspense, useMemo, useState } from "react";
 import { identity } from "../../config/identity";
 import { useLibrary } from "../../state/library";
 import { useNavigation } from "../../state/navigation";
 import { BookCover } from "../../components/BookCover";
+import { webglAvailable } from "./Room3D";
 import "./room.css";
 
+// Three.js is heavy; never let it weigh down launch. Loaded only when the
+// Room actually shows the 3D scene.
+const Room3D = lazy(() => import("./Room3D").then((m) => ({ default: m.Room3D })));
+
 /**
- * The static Room (M1): one current book under the lamp, up to two
- * companions, one obvious action. The 3D scene arrives in M4 behind the
- * same actions. No counts, no charts, no library on this surface.
+ * The Room: one current book under the lamp, up to two companions, one
+ * obvious action. A restrained 3D scene (M4) renders behind the same actions
+ * when WebGL is available and quality isn't "flat"; otherwise the static room
+ * shows. The scene unmounts the moment a book opens (handled by the router).
  */
 export function Room() {
   const goTo = useNavigation((s) => s.goTo);
   const openBook = useNavigation((s) => s.openBook);
-  const { status, desk } = useLibrary();
+  const { status, desk, settings } = useLibrary();
 
   const current = desk.find((b) => b.deskRole === "current") ?? desk[0] ?? null;
   const companions = desk.filter((b) => b !== current).slice(0, 2);
 
+  const [webgl] = useState(webglAvailable);
+  const use3D = webgl && settings.roomQuality !== "flat";
+
+  // Quiet Night placeholder: wired to a bedtime window in M5. Reduced motion
+  // also freezes the scene.
+  const reducedMotion = useMemo(
+    () =>
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    [],
+  );
+
   return (
     <main className="room" aria-label={identity.name}>
-      <div className="room-scene">
-        <div className="room-desk-surface">
-          {current ? (
-            <div className="room-current">
-              <button
-                className="room-current-book"
-                onClick={() => openBook(current.id)}
-                aria-label={`Continue reading ${current.title}`}
-              >
-                <BookCover book={current} size="large" />
-              </button>
-              <p className="room-current-title" lang={current.language ?? undefined}>
-                {current.title}
-              </p>
-              <button className="room-primary" onClick={() => openBook(current.id)}>
-                Continue reading
-              </button>
-            </div>
-          ) : (
-            <div className="room-current">
-              <p className="room-tagline">{identity.tagline}</p>
-              <button className="room-primary" onClick={() => goTo("stacks")}>
-                Place one book here
-              </button>
-            </div>
-          )}
+      {use3D && (
+        <Suspense fallback={null}>
+          <Room3D
+            current={current}
+            companions={companions}
+            quality={settings.roomQuality}
+            quietNight={reducedMotion}
+            onOpen={openBook}
+          />
+        </Suspense>
+      )}
 
-          {companions.length > 0 && (
-            <div className="room-companions" aria-label="Companion books">
-              {companions.map((b) => (
-                <button
-                  key={b.id}
-                  className="room-companion"
-                  onClick={() => openBook(b.id)}
-                  aria-label={`Open ${b.title}`}
-                  title={b.title}
-                >
-                  <BookCover book={b} size="medium" />
+      {/* Foreground UI: the actions live above the scene and are the
+          keyboard-accessible equivalents of every 3D interaction. */}
+      <div className={`room-ui${use3D ? " over-3d" : ""}`}>
+        <div className="room-scene">
+          <div className="room-desk-surface">
+            {current ? (
+              <div className="room-current">
+                {!use3D && (
+                  <button
+                    className="room-current-book"
+                    onClick={() => openBook(current.id)}
+                    aria-label={`Continue reading ${current.title}`}
+                  >
+                    <BookCover book={current} size="large" />
+                  </button>
+                )}
+                <p className="room-current-title" lang={current.language ?? undefined}>
+                  {current.title}
+                </p>
+                <button className="room-primary" onClick={() => openBook(current.id)}>
+                  Continue reading
                 </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+              </div>
+            ) : (
+              <div className="room-current">
+                <p className="room-tagline">{identity.tagline}</p>
+                <button className="room-primary" onClick={() => goTo("stacks")}>
+                  Place one book here
+                </button>
+              </div>
+            )}
 
-      <nav className="room-secondary" aria-label="Secondary">
-        <button onClick={() => goTo("stacks")}>Stacks</button>
-        <button onClick={() => goTo("commonplace")}>Commonplace</button>
-      </nav>
+            {!use3D && companions.length > 0 && (
+              <div className="room-companions" aria-label="Companion books">
+                {companions.map((b) => (
+                  <button
+                    key={b.id}
+                    className="room-companion"
+                    onClick={() => openBook(b.id)}
+                    aria-label={`Open ${b.title}`}
+                    title={b.title}
+                  >
+                    <BookCover book={b} size="medium" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {use3D && companions.length > 0 && (
+          <nav className="room-companion-links" aria-label="Companion books">
+            {companions.map((b) => (
+              <button key={b.id} onClick={() => openBook(b.id)}>
+                {b.title}
+              </button>
+            ))}
+          </nav>
+        )}
+
+        <nav className="room-secondary" aria-label="Secondary">
+          <button onClick={() => goTo("stacks")}>Stacks</button>
+          <button onClick={() => goTo("commonplace")}>Commonplace</button>
+          {webgl && <RoomQualityMenu />}
+        </nav>
+      </div>
 
       {status && (
         <p className="room-version" aria-hidden="true">
@@ -75,5 +123,33 @@ export function Room() {
         </p>
       )}
     </main>
+  );
+}
+
+function RoomQualityMenu() {
+  const { settings, updateSettings } = useLibrary();
+  const [open, setOpen] = useState(false);
+  const labels: Record<string, string> = { high: "Room: High", low: "Room: Low", flat: "Room: 2D" };
+  return (
+    <span className="room-quality">
+      <button onClick={() => setOpen((v) => !v)}>{labels[settings.roomQuality]}</button>
+      {open && (
+        <span className="room-quality-menu" role="menu">
+          {(["high", "low", "flat"] as const).map((q) => (
+            <button
+              key={q}
+              role="menuitemradio"
+              aria-checked={settings.roomQuality === q}
+              onClick={() => {
+                void updateSettings({ roomQuality: q });
+                setOpen(false);
+              }}
+            >
+              {q === "high" ? "High detail" : q === "low" ? "Low detail" : "2D (no 3D)"}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }

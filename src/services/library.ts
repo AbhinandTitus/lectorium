@@ -109,6 +109,8 @@ export function bookCoverUrl(bookId: string): string {
   return `http://book.localhost/cover/${bookId}`;
 }
 
+export type RoomQuality = "high" | "low" | "flat";
+
 export interface StoredSettings {
   version: 1;
   theme: "paper" | "ember";
@@ -118,6 +120,8 @@ export interface StoredSettings {
   /** chosen by "Make the page fit me"; overrides the preset font */
   calibratedFont: string | null;
   calibratedFontLabel: string | null;
+  /** 3D Room quality; "flat" forces the static room */
+  roomQuality: RoomQuality;
 }
 
 export const defaultSettings: StoredSettings = {
@@ -128,6 +132,7 @@ export const defaultSettings: StoredSettings = {
   onboarded: false,
   calibratedFont: null,
   calibratedFontLabel: null,
+  roomQuality: "high",
 };
 
 export async function loadSettings(): Promise<StoredSettings> {

@@ -6,9 +6,85 @@
   align-items: center;
   justify-content: center;
   gap: 2.5rem;
+  overflow: hidden;
   background:
     radial-gradient(ellipse 70% 55% at 50% 38%, rgb(177 132 82 / 7%), transparent 70%),
     var(--color-surround);
+}
+
+.room-ui {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2.5rem;
+  z-index: 1;
+}
+
+/* Over the 3D scene, the desk art comes from WebGL; the foreground UI drops
+   to just the actions, anchored near the bottom so it doesn't cover the book. */
+.room-ui.over-3d {
+  position: absolute;
+  bottom: 3.2rem;
+  gap: 1.4rem;
+}
+
+.room-ui.over-3d .room-desk-surface {
+  border-bottom: none;
+  padding: 0;
+}
+
+.room-ui.over-3d .room-current-title {
+  text-shadow: 0 1px 6px rgb(0 0 0 / 80%);
+}
+
+.room-companion-links {
+  display: flex;
+  gap: 1.6rem;
+}
+
+.room-companion-links button {
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  text-shadow: 0 1px 4px rgb(0 0 0 / 70%);
+}
+
+.room-companion-links button:hover {
+  color: var(--color-text-primary);
+}
+
+.room-quality {
+  position: relative;
+}
+
+.room-quality-menu {
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem;
+  background: var(--color-raised);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 40%);
+  white-space: nowrap;
+}
+
+.room-quality-menu button {
+  padding: 0.35rem 0.7rem;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  text-align: left;
+}
+
+.room-quality-menu button[aria-checked="true"] {
+  color: var(--color-accent);
+}
+
+.room-quality-menu button:hover {
+  color: var(--color-text-primary);
 }
 
 .room-scene {

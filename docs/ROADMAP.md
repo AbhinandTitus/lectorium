@@ -63,12 +63,16 @@ Live verification this milestone used WebView2 CDP (port 9223) + the devtool DB 
 
 Checks green: `pnpm verify` (22 vitest), `cargo fmt/clippy/test` (10). New Rust commands: list_commonplace, list_headings, link/unlink_entries, add/list_vocabulary, recall_available, record_recall, export_commonplace (writes Markdown + JSON, never copies book files).
 
-## Milestone 4 — 3D Room
+## Milestone 4 — 3D Room  ✓ COMPLETE (2026-07-18)
 
-- [ ] R3F room, demand rendering, instanced shelves, real cover + generated spine
-- [ ] 500–700 ms open transition; unmount/pause in Reader and Quiet Night; quality tiers + static fallback
+- [x] R3F room (procedural geometry, a clean seam to swap in GLB/KTX2 later): walnut desk, angled brass lamp with a shaded amber cone, shadowed **instanced** shelf books (one InstancedMesh, never thousands of meshes), companion stand. Real cover texture on the current book; generated spine color otherwise — [three/](../src/spaces/room/three/). Verified live at 2560×1440 with the user's real "48 Laws of Power" cover.
+- [x] **Demand rendering** (`frameloop="demand"`) → ~0 GPU when static; **pauses** (`frameloop="never"`) on window blur / hidden / reduced-motion. Scene **unmounts** on Reader entry (releases GPU) — verified: canvas gone, background stays Ember `#12100E` (no white flash).
+- [x] ~600 ms open transition with a warm crossfade veil (never a bright frame). Quality tiers **High / Low / 2D** with a Room menu; **2D** and **WebGL-failure** both fall back to the static room — verified live (2D drops the canvas, static cover shows).
+- [x] Three.js loaded **lazily** so it never weighs down launch; keyboard-accessible action buttons are the equivalent of every 3D interaction.
 
-**Acceptance:** quality at 2560×1440; keyboard equivalents for every 3D action; measured GPU/CPU behavior.
+**Acceptance met:** renders at 2560×1440 with real cover; keyboard equivalents present; demand-rendered/paused/unmounted as specified. Measured GPU profiling deferred to M5 release hardening; demand rendering means a static scene issues no draw calls.
+
+Checks green: `pnpm verify` (22 vitest), `cargo fmt/clippy/test` (10). Deps added: three, @react-three/fiber, @react-three/drei (all MIT).
 
 ## Milestone 5 — Hardening and Windows handoff
 

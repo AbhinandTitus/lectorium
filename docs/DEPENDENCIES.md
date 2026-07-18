@@ -14,7 +14,9 @@ Policy: small coherent set; each entry lists role, license, and maintenance stat
 | @tauri-apps/api + plugin-opener + plugin-dialog | shell bridge, external links, folder/file pickers | MIT/Apache-2.0 | |
 | @fontsource/* (literata, noto-serif-malayalam, noto-sans-malayalam, noto-sans) + @fontsource-variable/inter | bundled offline fonts | OFL (fonts), MIT (packaging) | copied into `public/fonts` by `scripts/copy-fonts.mjs`; licenses copied alongside |
 
-Deferred to their milestones: three / @react-three/fiber / drei (M4, MIT), Radix primitives (as needed, MIT), Source Serif 4 / EB Garamond / Atkinson Hyperlegible fontsource packages (M2 typography calibration).
+| three + @react-three/fiber + @react-three/drei | 3D Reading Room (M4) | MIT | loaded lazily; procedural geometry today with a seam for GLB/KTX2 assets |
+
+Deferred: Radix primitives (as needed, MIT). Source Serif 4 / EB Garamond / Atkinson Hyperlegible fontsource packages were added in M2 for typography calibration.
 
 ## Runtime (Rust)
 

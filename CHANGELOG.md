@@ -2,6 +2,14 @@
 
 All notable changes to Lectorium, grouped by milestone. This project is pre-1.0; versions are milestone tags rather than semantic releases. Dates are the build dates on the development machine.
 
+## Milestone 4 — 3D Reading Room — 2026-07-18
+
+- A restrained **3D Reading Room** behind the same actions: a walnut desk under an angled brass lamp with a shaded amber cone, the current book resting cover-up with its **real cover texture**, up to two companions, and shadowed shelves (a single InstancedMesh — never thousands of meshes).
+- **Demand-driven rendering** (≈0 GPU when static), **paused** on window blur / reduced motion, and the scene **unmounts on Reader entry** to release the GPU. The open transition is a warm ~600 ms crossfade — never a bright frame.
+- Quality tiers **High / Low / 2D**; **2D** and any WebGL failure fall back to the polished static room. Three.js is loaded lazily so it never slows launch. Every 3D interaction has a keyboard-accessible button equivalent.
+- Verified live at 2560×1440 with the real cover; confirmed canvas unmount + Ember (no white flash) on open, and the 2D fallback.
+- Dependencies: three, @react-three/fiber, @react-three/drei (MIT).
+
 ## Milestone 3 — Commonplace and Recall — 2026-07-18
 
 - **Commonplace space** over the entries the reader already keeps: full-text search across their own quotes/notes/headings, facet filters by reader-defined heading and by kind, and a click back to the source book.

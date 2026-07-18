@@ -1,0 +1,31 @@
+.room3d {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.room3d canvas {
+  display: block;
+}
+
+.room3d-veil {
+  position: absolute;
+  inset: 0;
+  background: var(--color-surround);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 500ms ease;
+}
+
+/* crossfade fully out on open, then the scene unmounts and Reader appears —
+   warm color, never a bright/white intermediate frame */
+.room3d.is-opening .room3d-veil {
+  opacity: 1;
+  pointer-events: all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room3d-veil {
+    transition: none;
+  }
+}
