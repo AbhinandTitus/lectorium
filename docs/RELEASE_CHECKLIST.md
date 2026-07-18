@@ -28,8 +28,9 @@ cd src-tauri && cargo test
 pnpm tauri build          # produces target/release/bundle/nsis/Lectorium_<version>_x64-setup.exe
 ```
 
-- [ ] NSIS installer builds — record path and size here after the release build completes
-- [ ] Installer runs on a clean Windows 11 account (currentUser install mode, no admin required)
+- [x] NSIS installer builds — `src-tauri/target/release/bundle/nsis/Lectorium_0.1.0_x64-setup.exe`, **4.58 MB**, per-user install mode (2026-07-18)
+- [x] Release binary launches — `target/release/lectorium.exe` opens the "Lectorium" window on this machine (2026-07-18)
+- [ ] Installer runs on a **clean** Windows 11 account (currentUser install mode, no admin required) — run on a fresh account/VM
 - [ ] App launches from the Start Menu shortcut into the Room
 - [ ] `--resume` argument (or a shortcut with it) launches straight into the most recent book
 - [ ] **Code signing: NOT configured.** Do not claim signing. Ship unsigned, or configure a certificate and update this line only when it is truly in place.
