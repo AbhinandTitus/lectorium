@@ -2,6 +2,16 @@
 
 All notable changes to Lectorium, grouped by milestone. This project is pre-1.0; versions are milestone tags rather than semantic releases. Dates are the build dates on the development machine.
 
+## Milestone 3 — Commonplace and Recall — 2026-07-18
+
+- **Commonplace space** over the entries the reader already keeps: full-text search across their own quotes/notes/headings, facet filters by reader-defined heading and by kind, and a click back to the source book.
+- **Cross-links** — explicit, bidirectional connections the reader creates between entries (deduped, never fabricated).
+- **Export** to a chosen folder: Markdown grouped by heading and JSON carrying the full locator envelopes, so every excerpt can navigate back to its exact source. Never copies book files. Verified with Malayalam Unicode intact.
+- **Vocabulary** capture: "Keep word" from the Define popover saves the word, its sentence, and locator.
+- **Recall** — opt-in and non-scored: shows the reader's own cue/heading first, hides the passage until Reveal, and quietly schedules when an entry returns. No grades, percentages, streaks, or due-date shame.
+- Rust: `list_commonplace`, `list_headings`, `link/unlink_entries`, `add/list_vocabulary`, `recall_available`, `record_recall`, `export_commonplace`.
+- Verified live over CDP: entry listing with attribution, bidirectional linking, Markdown+JSON export with locators, Keep-word vocabulary, and the Recall flow (cue-first, no score).
+
 ## Milestone 2 — Reader depth — 2026-07-18
 
 The Reader became good enough to read a complete English or Malayalam book, which is the acceptance gate before any 3D work.

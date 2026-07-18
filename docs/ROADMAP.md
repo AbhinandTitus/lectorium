@@ -51,12 +51,17 @@ Known limitations to M5: online dictionary adapter not implemented (offline word
 
 Live verification this milestone used WebView2 CDP (port 9223) + the devtool DB seeder — see [[lectorium-ui-verification]] memory. Checks green: `pnpm verify` (22 vitest incl. sanitizer), `cargo fmt/clippy/test` (10).
 
-## Milestone 3 — Commonplace and recall
+## Milestone 3 — Commonplace and recall  ✓ COMPLETE (2026-07-18)
 
-- [ ] Typed entries with source locators; tags/headings; explicit cross-links
-- [ ] Markdown/JSON export; opt-in non-scored Recall; Study chapter-end prompt; practical-book Action
+- [x] Commonplace space over the entries the reader already keeps: search across own quotes/notes/headings, filter by reader-defined heading and by kind, jump back to source — [Commonplace.tsx](../src/spaces/commonplace/Commonplace.tsx). Verified live (4 captured entries incl. Malayalam, with correct attribution).
+- [x] Explicit **cross-links** between entries (bidirectional, deduped) — verified live: linking two entries showed a connection chip on both.
+- [x] **Export** to a chosen folder as Markdown (grouped by heading) + JSON (with full locator envelopes) — verified live: Malayalam Unicode intact, every JSON entry carries `startLocatorJson` so excerpts navigate back, links preserved.
+- [x] **Vocabulary** capture: "Keep word" from the Define popover saves word + sentence + locator — verified live.
+- [x] Opt-in **Recall** (non-scored): shows the reader's own cue/heading first, hides the passage until Reveal, no grades/percentages/streaks, spacing schedules availability quietly — verified live (cue-first, no score, advances). Study chapter-end prompt and practical-book Action delivered in M2.
 
-**Acceptance:** every exported excerpt navigates back to its source; Recall has no scores or forced prompts.
+**Acceptance met:** every exported excerpt carries its source locator (JSON) and attribution (Markdown); Recall has no scores or forced prompts.
+
+Checks green: `pnpm verify` (22 vitest), `cargo fmt/clippy/test` (10). New Rust commands: list_commonplace, list_headings, link/unlink_entries, add/list_vocabulary, recall_available, record_recall, export_commonplace (writes Markdown + JSON, never copies book files).
 
 ## Milestone 4 — 3D Room
 

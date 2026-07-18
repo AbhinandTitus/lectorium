@@ -21,6 +21,7 @@ import { SearchPanel } from "./SearchPanel";
 import { ForeEdge } from "./ForeEdge";
 import { Calibration } from "./Calibration";
 import { define, type DefineResult } from "../../services/dictionary";
+import { addVocabulary } from "../../services/commonplace";
 import "./reader.css";
 
 const CHROME_FADE_MS = 2500;
@@ -73,7 +74,9 @@ export function Reader() {
   const [definePopover, setDefinePopover] = useState<{
     result: DefineResult;
     word: string;
+    selection: EngineSelection;
     rect: { x: number; y: number };
+    kept: boolean;
   } | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
 
@@ -520,7 +523,10 @@ export function Reader() {
           onDefine={() => {
             const word = selection.text.trim().split(/\s+/)[0] ?? "";
             const rect = { x: selection.rect.x, y: selection.rect.y };
-            void define(word).then((result) => setDefinePopover({ result, word, rect }));
+            const captured = selection;
+            void define(word).then((result) =>
+              setDefinePopover({ result, word, rect, selection: captured, kept: false }),
+            );
           }}
           onKeep={() => setNoteDraft({ selection, keep: true })}
           onCopy={onCopy}
@@ -571,6 +577,26 @@ export function Reader() {
           ) : (
             <p>{definePopover.result.message}</p>
           )}
+          <button
+            className="define-keep"
+            disabled={definePopover.kept}
+            onClick={() => {
+              if (!bookId) return;
+              void addVocabulary({
+                id: crypto.randomUUID(),
+                bookId,
+                normalizedWord: definePopover.word.toLowerCase(),
+                displayedWord: definePopover.word,
+                sentence: definePopover.selection.text,
+                definition: definePopover.result.definition?.sense ?? null,
+                locatorJson: serializeEnvelope(definePopover.selection.locator),
+                note: null,
+              });
+              setDefinePopover({ ...definePopover, kept: true });
+            }}
+          >
+            {definePopover.kept ? "Kept" : "Keep word"}
+          </button>
           <button onClick={() => setDefinePopover(null)} aria-label="Close definition">
             ×
           </button>

@@ -414,6 +414,309 @@ pub fn delete_annotation(conn: &Connection, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A Commonplace entry joined with its book, for the Commonplace space.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommonplaceEntry {
+    pub id: String,
+    pub book_id: String,
+    pub book_title: String,
+    pub book_authors: Vec<String>,
+    pub kind: String,
+    pub exact_quote: Option<String>,
+    pub note: Option<String>,
+    pub commonplace_heading: Option<String>,
+    pub section_title: Option<String>,
+    pub start_locator_json: String,
+    pub engine_type: String,
+    pub created_at: String,
+    pub linked_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommonplaceQuery {
+    pub search: Option<String>,
+    pub heading: Option<String>,
+    pub kind: Option<String>,
+    pub book_id: Option<String>,
+}
+
+pub fn list_commonplace(
+    conn: &Connection,
+    q: &CommonplaceQuery,
+) -> Result<Vec<CommonplaceEntry>, AppError> {
+    // Commonplace shows reflective/kept kinds, not raw bookmarks/highlights.
+    let mut sql = String::from(
+        "SELECT a.id, a.book_id, b.title, b.authors, a.kind, a.exact_quote, a.note,
+                a.commonplace_heading, a.start_locator_json, b.reading_format, a.created_at,
+                (SELECT l.section_title FROM book_locations l WHERE l.book_id = a.book_id)
+         FROM annotations a JOIN books b ON b.id = a.book_id
+         WHERE a.kind IN ('quote','idea','question','vocabulary','action','character','free','note','highlight')",
+    );
+    let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(search) = q.search.as_deref().filter(|s| !s.trim().is_empty()) {
+        let escaped = search
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        args.push(Box::new(format!("%{escaped}%")));
+        let n = args.len();
+        sql.push_str(&format!(
+            " AND (a.exact_quote LIKE ?{n} ESCAPE '\\' OR a.note LIKE ?{n} ESCAPE '\\'
+                OR a.commonplace_heading LIKE ?{n} ESCAPE '\\' OR b.title LIKE ?{n} ESCAPE '\\')"
+        ));
+    }
+    if let Some(heading) = q.heading.as_deref().filter(|s| !s.is_empty()) {
+        args.push(Box::new(heading.to_string()));
+        sql.push_str(&format!(" AND a.commonplace_heading = ?{}", args.len()));
+    }
+    if let Some(kind) = q.kind.as_deref().filter(|s| !s.is_empty()) {
+        args.push(Box::new(kind.to_string()));
+        sql.push_str(&format!(" AND a.kind = ?{}", args.len()));
+    }
+    if let Some(book_id) = q.book_id.as_deref().filter(|s| !s.is_empty()) {
+        args.push(Box::new(book_id.to_string()));
+        sql.push_str(&format!(" AND a.book_id = ?{}", args.len()));
+    }
+    sql.push_str(" ORDER BY a.created_at DESC LIMIT 1000");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    let mut entries: Vec<CommonplaceEntry> = stmt
+        .query_map(params_ref.as_slice(), |r| {
+            let authors_json: String = r.get(3)?;
+            Ok(CommonplaceEntry {
+                id: r.get(0)?,
+                book_id: r.get(1)?,
+                book_title: r.get(2)?,
+                book_authors: serde_json::from_str(&authors_json).unwrap_or_default(),
+                kind: r.get(4)?,
+                exact_quote: r.get(5)?,
+                note: r.get(6)?,
+                commonplace_heading: r.get(7)?,
+                start_locator_json: r.get(8)?,
+                engine_type: r.get(9)?,
+                created_at: r.get(10)?,
+                section_title: r.get(11)?,
+                linked_ids: Vec::new(),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // attach cross-links
+    for entry in &mut entries {
+        let mut link_stmt = conn.prepare(
+            "SELECT to_annotation_id FROM links WHERE from_annotation_id = ?1
+             UNION SELECT from_annotation_id FROM links WHERE to_annotation_id = ?1",
+        )?;
+        entry.linked_ids = link_stmt
+            .query_map([&entry.id], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+    Ok(entries)
+}
+
+pub fn list_headings(conn: &Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT commonplace_heading FROM annotations
+         WHERE commonplace_heading IS NOT NULL AND commonplace_heading != ''
+         ORDER BY commonplace_heading COLLATE NOCASE",
+    )?;
+    let headings = stmt
+        .query_map([], |r| r.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(headings)
+}
+
+pub fn link_annotations(conn: &Connection, from_id: &str, to_id: &str) -> Result<(), AppError> {
+    if from_id == to_id {
+        return Err(AppError::Other("An entry cannot link to itself.".into()));
+    }
+    // store one canonical direction to avoid duplicate reverse rows
+    let (a, b) = if from_id < to_id {
+        (from_id, to_id)
+    } else {
+        (to_id, from_id)
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO links (from_annotation_id, to_annotation_id) VALUES (?1, ?2)",
+        params![a, b],
+    )?;
+    Ok(())
+}
+
+pub fn unlink_annotations(conn: &Connection, from_id: &str, to_id: &str) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM links WHERE (from_annotation_id = ?1 AND to_annotation_id = ?2)
+                              OR (from_annotation_id = ?2 AND to_annotation_id = ?1)",
+        params![from_id, to_id],
+    )?;
+    Ok(())
+}
+
+// ---- Vocabulary ----
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyEntry {
+    pub id: String,
+    pub book_id: String,
+    pub normalized_word: String,
+    pub displayed_word: String,
+    pub sentence: String,
+    pub definition: Option<String>,
+    pub locator_json: String,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+pub fn add_vocabulary(conn: &Connection, v: &VocabularyEntry) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO vocabulary (id, book_id, normalized_word, displayed_word, sentence,
+                                 definition, locator_json, note)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![
+            v.id,
+            v.book_id,
+            v.normalized_word,
+            v.displayed_word,
+            v.sentence,
+            v.definition,
+            v.locator_json,
+            v.note
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_vocabulary(conn: &Connection) -> Result<Vec<VocabularyEntry>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, book_id, normalized_word, displayed_word, sentence, definition,
+                locator_json, note, created_at
+         FROM vocabulary ORDER BY created_at DESC LIMIT 2000",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(VocabularyEntry {
+                id: r.get(0)?,
+                book_id: r.get(1)?,
+                normalized_word: r.get(2)?,
+                displayed_word: r.get(3)?,
+                sentence: r.get(4)?,
+                definition: r.get(5)?,
+                locator_json: r.get(6)?,
+                note: r.get(7)?,
+                created_at: r.get(8)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+// ---- Recall (opt-in, non-scored) ----
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallItem {
+    pub annotation_id: String,
+    pub book_id: String,
+    pub cue: String,
+    pub kind: String,
+    pub book_title: String,
+    pub exact_quote: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Items available for Recall now: kept entries whose `available_after` has
+/// passed (or is unset). Spacing schedules availability; the queue is never
+/// forced and no score is kept.
+pub fn recall_available(conn: &Connection, limit: i64) -> Result<Vec<RecallItem>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.commonplace_heading, a.kind, b.title, a.exact_quote, a.note, a.book_id
+         FROM annotations a
+         JOIN books b ON b.id = a.book_id
+         LEFT JOIN recall_state r ON r.item_type = 'annotation' AND r.item_id = a.id
+         WHERE a.kind IN ('quote','idea','question','character','action')
+           AND (r.available_after IS NULL OR r.available_after <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         ORDER BY COALESCE(r.last_seen_at, '') ASC, a.created_at DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map([limit], |r| {
+            let heading: Option<String> = r.get(1)?;
+            let quote: Option<String> = r.get(4)?;
+            let note: Option<String> = r.get(5)?;
+            // the cue is the reader's own heading/note — never the passage
+            let cue = heading
+                .clone()
+                .or_else(|| note.clone())
+                .unwrap_or_else(|| "What do you remember here?".into());
+            Ok(RecallItem {
+                annotation_id: r.get(0)?,
+                cue,
+                kind: r.get(2)?,
+                book_title: r.get(3)?,
+                exact_quote: quote,
+                note,
+                book_id: r.get(6)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// Record a Recall review. Spacing: push availability out by an increasing
+/// interval. The interval is not shown to the user and there is no grade.
+pub fn record_recall(
+    conn: &Connection,
+    annotation_id: &str,
+    response: Option<&str>,
+    remembered: bool,
+) -> Result<(), AppError> {
+    // simple expanding schedule: remembered → longer, else → short retry
+    let days = if remembered { 7 } else { 1 };
+    conn.execute(
+        "INSERT INTO recall_state (item_type, item_id, available_after, last_seen_at, reader_response)
+         VALUES ('annotation', ?1,
+                 strftime('%Y-%m-%dT%H:%M:%fZ','now', ?2),
+                 strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?3)
+         ON CONFLICT(item_type, item_id) DO UPDATE SET
+             available_after = strftime('%Y-%m-%dT%H:%M:%fZ','now', ?2),
+             last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+             reader_response = COALESCE(?3, reader_response)",
+        params![annotation_id, format!("+{days} days"), response],
+    )?;
+    Ok(())
+}
+
+/// Everything needed to export the Commonplace (all kept entries + vocab).
+pub fn export_data(conn: &Connection) -> Result<ExportBundle, AppError> {
+    let entries = list_commonplace(conn, &CommonplaceQuery::default())?;
+    let vocabulary = list_vocabulary(conn)?;
+    Ok(ExportBundle {
+        version: 1,
+        exported_at: conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+            r.get(0)
+        })?,
+        entries,
+        vocabulary,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportBundle {
+    pub version: i64,
+    pub exported_at: String,
+    pub entries: Vec<CommonplaceEntry>,
+    pub vocabulary: Vec<VocabularyEntry>,
+}
+
 pub fn set_reading_mode(conn: &Connection, book_id: &str, mode: &str) -> Result<(), AppError> {
     if !matches!(mode, "story" | "study" | "contemplative") {
         return Err(AppError::Other("Unknown reading mode.".into()));

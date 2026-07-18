@@ -577,6 +577,17 @@
   color: var(--color-text-secondary);
 }
 
+.define-keep {
+  margin-top: 0.5rem;
+  color: var(--color-accent);
+  font-size: 0.82rem;
+}
+
+.define-keep:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+
 /* ---------- fore-edge landmark ---------- */
 
 .fore-edge {

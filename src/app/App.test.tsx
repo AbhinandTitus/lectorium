@@ -22,7 +22,7 @@ describe("App shell", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "Commonplace" }));
-    expect(screen.getByRole("heading", { name: "Commonplace" })).toBeInTheDocument();
+    expect(await screen.findByRole("main", { name: "Commonplace" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Back to the room" }));
     expect(await screen.findByText(identity.tagline)).toBeInTheDocument();

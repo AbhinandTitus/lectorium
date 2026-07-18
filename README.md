@@ -17,8 +17,8 @@ Milestones 0–2 are complete and verified; the Reader is already good enough to
 | **M0 — Foundation** | ✅ Complete | Toolchain, Tauri scaffold, ADRs + docs, design tokens (WCAG-tested), SQLite migrations + rotating backups, logging |
 | **M1 — Library + reader shell** | ✅ Complete | Background scanner (hash dedup/relink, missing-file safety), Stacks, desk roles, EPUB/PDF/text engines, **exact resume across restarts** (verified), onboarding, Paper/Ember themes |
 | **M2 — Reader depth** | ✅ Complete | TOC, search, selection toolbar, annotations + highlights, bookmarks, footnotes, fore-edge, **PDF Reflow** (reversible, page-preserving), Story/Study/Contemplative modes, typography calibration, **malicious-EPUB sanitizer** (verified inert), Malayalam end-to-end, 200% scaling |
-| **M3 — Commonplace + Recall** | ⏳ In progress | Commonplace space UI, cross-links, Markdown/JSON export, opt-in non-scored Recall |
-| **M4 — 3D Reading Room** | ⬜ Not started | R3F room with demand rendering, real cover, restrained transition, static fallback |
+| **M3 — Commonplace + Recall** | ✅ Complete | Commonplace space (search/heading/kind facets), cross-links, Markdown/JSON export with source locators, vocabulary, opt-in non-scored Recall |
+| **M4 — 3D Reading Room** | ⏳ In progress | R3F room with demand rendering, real cover, restrained transition, static fallback |
 | **M5 — Hardening + release** | ⬜ Not started | Large-library/PDF tests, installer, clean-machine checklist, `RELEASE_CHECKLIST.md` |
 
 All automated checks pass: `pnpm verify` (22 Vitest tests incl. the security sanitizer suite), `cargo fmt/clippy/test` (10 Rust tests). See [CHANGELOG.md](CHANGELOG.md) for the milestone history.
@@ -35,7 +35,6 @@ All automated checks pass: `pnpm verify` (22 Vitest tests incl. the security san
 
 ### What's left
 
-- **Commonplace space** (browsing/editing entries, cross-links, Markdown/JSON export, opt-in Recall) — the capture side and data model already exist.
 - **3D Reading Room** (currently a polished static room).
 - **Release hardening**: installer, large-library stress tests, backup/restore drills, clean-machine checklist.
 - Smaller documented gaps: online dictionary wordlist not yet bundled, dedicated Contemplative layout, PDF Warm-Dim/Smart-Dark split, RTL fixture, Playwright visual-regression. All tracked in [docs/ROADMAP.md](docs/ROADMAP.md).

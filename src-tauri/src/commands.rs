@@ -1,7 +1,8 @@
 //! The typed IPC surface. Commands stay thin: validate, delegate, return.
 
 use crate::db::repo::{
-    self, Annotation, BookDetail, BookQuery, BookSummary, DeskConflict, LibraryRoot, SavedLocation,
+    self, Annotation, BookDetail, BookQuery, BookSummary, CommonplaceEntry, CommonplaceQuery,
+    DeskConflict, LibraryRoot, RecallItem, SavedLocation, VocabularyEntry,
 };
 use crate::db::{schema_version, Db};
 use crate::error::AppError;
@@ -201,6 +202,152 @@ pub fn delete_annotation(db: State<'_, Db>, id: String) -> Result<(), AppError> 
 pub fn set_reading_mode(db: State<'_, Db>, book_id: String, mode: String) -> Result<(), AppError> {
     let conn = lock(&db)?;
     repo::set_reading_mode(&conn, &book_id, &mode)
+}
+
+#[tauri::command]
+pub fn list_commonplace(
+    db: State<'_, Db>,
+    query: CommonplaceQuery,
+) -> Result<Vec<CommonplaceEntry>, AppError> {
+    let conn = lock(&db)?;
+    repo::list_commonplace(&conn, &query)
+}
+
+#[tauri::command]
+pub fn list_headings(db: State<'_, Db>) -> Result<Vec<String>, AppError> {
+    let conn = lock(&db)?;
+    repo::list_headings(&conn)
+}
+
+#[tauri::command]
+pub fn link_entries(db: State<'_, Db>, from_id: String, to_id: String) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::link_annotations(&conn, &from_id, &to_id)
+}
+
+#[tauri::command]
+pub fn unlink_entries(db: State<'_, Db>, from_id: String, to_id: String) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::unlink_annotations(&conn, &from_id, &to_id)
+}
+
+#[tauri::command]
+pub fn add_vocabulary(db: State<'_, Db>, entry: VocabularyEntry) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::add_vocabulary(&conn, &entry)
+}
+
+#[tauri::command]
+pub fn list_vocabulary(db: State<'_, Db>) -> Result<Vec<VocabularyEntry>, AppError> {
+    let conn = lock(&db)?;
+    repo::list_vocabulary(&conn)
+}
+
+#[tauri::command]
+pub fn recall_available(
+    db: State<'_, Db>,
+    limit: Option<i64>,
+) -> Result<Vec<RecallItem>, AppError> {
+    let conn = lock(&db)?;
+    repo::recall_available(&conn, limit.unwrap_or(20).clamp(1, 100))
+}
+
+#[tauri::command]
+pub fn record_recall(
+    db: State<'_, Db>,
+    annotation_id: String,
+    response: Option<String>,
+    remembered: bool,
+) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::record_recall(&conn, &annotation_id, response.as_deref(), remembered)
+}
+
+/// Export the Commonplace + vocabulary to a chosen folder as Markdown and
+/// JSON. Never copies book files. Returns the written directory.
+#[tauri::command]
+pub fn export_commonplace(db: State<'_, Db>, dir: String) -> Result<String, AppError> {
+    let bundle = {
+        let conn = lock(&db)?;
+        repo::export_data(&conn)?
+    };
+    let root = std::path::Path::new(&dir);
+    if !root.is_dir() {
+        return Err(AppError::Other("That is not a folder.".into()));
+    }
+    let out = root.join("lectorium-commonplace");
+    std::fs::create_dir_all(&out)?;
+
+    // JSON (machine-readable, includes source locators)
+    let json = serde_json::to_string_pretty(&bundle)
+        .map_err(|e| AppError::Other(format!("Could not serialize export: {e}")))?;
+    std::fs::write(out.join("commonplace.json"), json)?;
+
+    // Markdown, grouped by heading (the reader's "commonplaces")
+    std::fs::write(out.join("commonplace.md"), render_markdown(&bundle))?;
+
+    tracing::info!(?out, "exported commonplace");
+    Ok(out.to_string_lossy().into_owned())
+}
+
+fn render_markdown(bundle: &repo::ExportBundle) -> String {
+    use std::collections::BTreeMap;
+    let mut by_heading: BTreeMap<String, Vec<&CommonplaceEntry>> = BTreeMap::new();
+    for e in &bundle.entries {
+        let h = e
+            .commonplace_heading
+            .clone()
+            .unwrap_or_else(|| "Unfiled".into());
+        by_heading.entry(h).or_default().push(e);
+    }
+
+    let mut md = String::from("# Commonplace\n\n");
+    md.push_str(&format!("_Exported {}_\n\n", bundle.exported_at));
+
+    for (heading, entries) in &by_heading {
+        md.push_str(&format!("## {heading}\n\n"));
+        for e in entries {
+            if let Some(q) = &e.exact_quote {
+                for line in q.lines() {
+                    md.push_str(&format!("> {line}\n"));
+                }
+                md.push('\n');
+            }
+            if let Some(note) = &e.note {
+                md.push_str(&format!("{note}\n\n"));
+            }
+            let author = e.book_authors.first().cloned().unwrap_or_default();
+            let where_ = e.section_title.clone().unwrap_or_default();
+            md.push_str(&format!(
+                "— *{}*{}{} · {}\n\n",
+                e.book_title,
+                if author.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {author}")
+                },
+                if where_.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({where_})")
+                },
+                e.kind,
+            ));
+            md.push_str("---\n\n");
+        }
+    }
+
+    if !bundle.vocabulary.is_empty() {
+        md.push_str("## Vocabulary\n\n");
+        for v in &bundle.vocabulary {
+            md.push_str(&format!("**{}**", v.displayed_word));
+            if let Some(def) = &v.definition {
+                md.push_str(&format!(" — {def}"));
+            }
+            md.push_str(&format!("\n> {}\n\n", v.sentence));
+        }
+    }
+    md
 }
 
 #[derive(Serialize, Deserialize)]
