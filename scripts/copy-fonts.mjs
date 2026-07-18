@@ -57,6 +57,36 @@ const PLAN = [
     ],
   },
   {
+    family: "Source Serif 4",
+    pkg: "@fontsource/source-serif-4",
+    files: ["source-serif-4-latin-400-normal.woff2", "source-serif-4-latin-700-normal.woff2"],
+    faces: [
+      { file: "source-serif-4-latin-400-normal.woff2", weight: 400, style: "normal" },
+      { file: "source-serif-4-latin-700-normal.woff2", weight: 700, style: "normal" },
+    ],
+  },
+  {
+    family: "EB Garamond",
+    pkg: "@fontsource/eb-garamond",
+    files: ["eb-garamond-latin-400-normal.woff2", "eb-garamond-latin-400-italic.woff2"],
+    faces: [
+      { file: "eb-garamond-latin-400-normal.woff2", weight: 400, style: "normal" },
+      { file: "eb-garamond-latin-400-italic.woff2", weight: 400, style: "italic" },
+    ],
+  },
+  {
+    family: "Atkinson Hyperlegible",
+    pkg: "@fontsource/atkinson-hyperlegible",
+    files: [
+      "atkinson-hyperlegible-latin-400-normal.woff2",
+      "atkinson-hyperlegible-latin-700-normal.woff2",
+    ],
+    faces: [
+      { file: "atkinson-hyperlegible-latin-400-normal.woff2", weight: 400, style: "normal" },
+      { file: "atkinson-hyperlegible-latin-700-normal.woff2", weight: 700, style: "normal" },
+    ],
+  },
+  {
     family: "Inter",
     pkg: "@fontsource-variable/inter",
     files: ["inter-latin-wght-normal.woff2"],

@@ -1,0 +1,80 @@
+.calibration {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  padding: 2rem;
+  background: var(--color-page);
+}
+
+.calibration-progress {
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+}
+
+.calibration-read,
+.calibration-question {
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.6rem;
+}
+
+.calibration-passage {
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  text-align: left;
+}
+
+.calibration-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+.calibration-primary {
+  padding: 0.7rem 1.6rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-small);
+  color: var(--color-accent);
+  font-size: 0.98rem;
+}
+
+.calibration-primary:hover {
+  background: var(--color-raised);
+}
+
+.calibration-skip {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.calibration-question p {
+  font-size: 1.1rem;
+  color: var(--color-text-primary);
+}
+
+.calibration-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.calibration-options button {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+}
+
+.calibration-options button:hover {
+  border-color: var(--color-accent);
+  background: var(--color-raised);
+}

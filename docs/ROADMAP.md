@@ -38,14 +38,18 @@ Fixed during live verification: book:// protocol needed CORS headers (page origi
 
 Checks green (2026-07-18): `pnpm verify` (typecheck+lint+format+16 vitest), `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (10).
 
-## Milestone 2 — Reader depth
+## Milestone 2 — Reader depth  ✓ COMPLETE (2026-07-18)
 
-- [ ] TOC/section map; fore-edge landmark; PDF Original/Reflow/night modes; cross-view locators
-- [ ] Selection toolbar (Highlight/Note/Define/Keep/Copy); search; footnote popovers; dictionary adapter
-- [ ] Story/Study/Contemplative modes; typography calibration
-- [ ] Accessibility pass; Malayalam end-to-end; malicious-content hardening
+- [x] TOC/section map (EPUB nav, PDF outline, text headings); fore-edge landmark with chapter notches + hidden-percentage position; PDF Original/Reflow + Ember night filter; cross-view PDF locators (page preserved across view switch) — verified live
+- [x] Selection toolbar (Highlight/Note/Define/Keep/Copy), keyboard-accessible; in-book search (Ctrl+F) for all 3 engines; footnote popovers (noteref → in-app, returns to source, never navigates); dictionary adapter seam (offline stub + calm not-available copy) — verified live
+- [x] Story/Study/Contemplative modes per book; Study chapter-boundary prompt saving an Idea; typography calibration ("Make the page fit me", 5 timed matched passages, fastest-correct font, no score shown) — verified live
+- [x] Accessibility: 200% text scaling with no horizontal scroll (verified); annotation kind not color-only; Malayalam end-to-end (font stack, shaping, search, conjunct-spanning highlight with intact Unicode quote — verified live); malicious-content hardening (sanitizeDom: zero scripts, zero network attempts vs hostile fixture — verified live; 6 unit tests)
 
-**Acceptance:** the Reader is good enough to read a complete book before 3D work starts.
+**Acceptance met:** a complete English or Malayalam EPUB, and text/scanned PDFs, are fully readable with annotations, search, TOC, modes, and reflow in the current build.
+
+Known limitations to M5: online dictionary adapter not implemented (offline wordlist not yet bundled — Define shows calm copy); Contemplative mode uses the shared reader (no dedicated Read/Reflect/Respond/Rest layout yet); PDF Warm Dim / Smart Dark are a single Ember luminance filter, not the full three-way choice; two-page Spread not offered; RTL EPUB fixture not yet created; Playwright visual-regression + automated no-white-flash frame capture deferred to M5.
+
+Live verification this milestone used WebView2 CDP (port 9223) + the devtool DB seeder — see [[lectorium-ui-verification]] memory. Checks green: `pnpm verify` (22 vitest incl. sanitizer), `cargo fmt/clippy/test` (10).
 
 ## Milestone 3 — Commonplace and recall
 

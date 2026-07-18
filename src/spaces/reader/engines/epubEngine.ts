@@ -298,7 +298,12 @@ export class EpubEngine implements ReaderEngine {
     if (!this.rendition || !this.typography) return;
     const t = this.typography;
     const palette = themes[this.theme];
-    const family = this.language ? stackFor(this.language) : t.fontFamily;
+    // Malayalam always uses its script-aware stack; Latin content honors the
+    // calibrated/preset font from typography settings.
+    const family =
+      this.language && stackFor(this.language) !== stackFor(null)
+        ? stackFor(this.language)
+        : t.fontFamily;
     this.rendition.themes.default({
       body: {
         "font-family": `${family} !important`,

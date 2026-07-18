@@ -19,6 +19,7 @@ import { SelectionToolbar } from "./SelectionToolbar";
 import { TocDrawer } from "./TocDrawer";
 import { SearchPanel } from "./SearchPanel";
 import { ForeEdge } from "./ForeEdge";
+import { Calibration } from "./Calibration";
 import { define, type DefineResult } from "../../services/dictionary";
 import "./reader.css";
 
@@ -87,14 +88,16 @@ export function Reader() {
   const lastSection = useRef<string | null>(null);
   const modeRef = useRef<ReadingMode>("story");
 
+  const [calibrating, setCalibrating] = useState(false);
+
   const typography: TypographySettings = useMemo(() => {
     const base = presets[settings.typographyPreset];
     const fontSizePx = Math.min(
       FONT_SIZE_MAX,
       Math.max(FONT_SIZE_MIN, base.fontSizePx + fontDelta),
     );
-    return { ...base, fontSizePx };
-  }, [settings.typographyPreset, fontDelta]);
+    return { ...base, fontSizePx, fontFamily: settings.calibratedFont ?? base.fontFamily };
+  }, [settings.typographyPreset, fontDelta, settings.calibratedFont]);
 
   const flushSave = useCallback(() => {
     if (!saveDirty.current || !lastLocator.current || !bookId) return;
@@ -667,7 +670,25 @@ export function Reader() {
             void ann.setReadingMode(book.id, mode);
           }}
           onPdfView={switchPdfView}
+          calibratedLabel={settings.calibratedFontLabel}
+          onCalibrate={() => {
+            setSheetOpen(false);
+            setCalibrating(true);
+          }}
+          onClearCalibration={() =>
+            void updateSettings({ calibratedFont: null, calibratedFontLabel: null })
+          }
           onClose={() => setSheetOpen(false)}
+        />
+      )}
+
+      {calibrating && (
+        <Calibration
+          onSkip={() => setCalibrating(false)}
+          onDone={(label, stack) => {
+            setCalibrating(false);
+            void updateSettings({ calibratedFont: stack, calibratedFontLabel: label });
+          }}
         />
       )}
     </main>
@@ -753,10 +774,13 @@ function AppearanceSheet({
   mode,
   isPdf,
   pdfView,
+  calibratedLabel,
   onTheme,
   onPreset,
   onMode,
   onPdfView,
+  onCalibrate,
+  onClearCalibration,
   onClose,
 }: {
   theme: ThemeName;
@@ -764,10 +788,13 @@ function AppearanceSheet({
   mode: ReadingMode;
   isPdf: boolean;
   pdfView: "original" | "reflow";
+  calibratedLabel: string | null;
   onTheme: (t: ThemeName) => void;
   onPreset: (p: PresetName) => void;
   onMode: (m: ReadingMode) => void;
   onPdfView: (v: "original" | "reflow") => void;
+  onCalibrate: () => void;
+  onClearCalibration: () => void;
   onClose: () => void;
 }) {
   return (
@@ -825,6 +852,17 @@ function AppearanceSheet({
             </button>
           ))}
         </div>
+      </div>
+      <div className="appearance-calibrate">
+        <button onClick={onCalibrate}>Make the page fit me</button>
+        {calibratedLabel && (
+          <span>
+            {calibratedLabel} ·{" "}
+            <button className="appearance-link" onClick={onClearCalibration}>
+              reset
+            </button>
+          </span>
+        )}
       </div>
       <p className="appearance-hint">
         T contents · Ctrl+F search · B bookmark · Ctrl± text size · Esc closes

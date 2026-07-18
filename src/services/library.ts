@@ -115,6 +115,9 @@ export interface StoredSettings {
   typographyPreset: "focus" | "open" | "air";
   directResume: boolean;
   onboarded: boolean;
+  /** chosen by "Make the page fit me"; overrides the preset font */
+  calibratedFont: string | null;
+  calibratedFontLabel: string | null;
 }
 
 export const defaultSettings: StoredSettings = {
@@ -123,6 +126,8 @@ export const defaultSettings: StoredSettings = {
   typographyPreset: "open",
   directResume: false,
   onboarded: false,
+  calibratedFont: null,
+  calibratedFontLabel: null,
 };
 
 export async function loadSettings(): Promise<StoredSettings> {
