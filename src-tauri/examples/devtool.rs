@@ -106,6 +106,37 @@ fn main() {
                 println!("LOC {row}");
             }
         }
+        "bench-scan" => {
+            // Measure a cold scan of a large library into this (fresh) db.
+            drop(conn);
+            let root = std::fs::canonicalize(&args[3]).expect("library path");
+            let covers = std::env::temp_dir().join("lectorium-bench-covers");
+            {
+                let c = db.conn.lock().unwrap();
+                c.execute(
+                    "INSERT INTO library_roots (id, canonical_path, display_name)
+                     VALUES (1, ?1, 'bench') ON CONFLICT(canonical_path) DO NOTHING",
+                    [root.to_string_lossy().to_string()],
+                )
+                .unwrap();
+            }
+            let start = std::time::Instant::now();
+            let outcome =
+                lectorium_lib::run_scan_for_tools(&db, &covers, 1, &root, &mut |found, done| {
+                    if done % 2000 == 0 {
+                        println!("  scanned {done}/{found}");
+                    }
+                })
+                .expect("scan");
+            let secs = start.elapsed().as_secs_f64();
+            println!(
+                "BENCH found={} added={} in {:.2}s ({:.0} files/s)",
+                outcome.0,
+                outcome.1,
+                secs,
+                outcome.0 as f64 / secs
+            );
+        }
         other => {
             eprintln!("unknown command {other}");
             std::process::exit(2);

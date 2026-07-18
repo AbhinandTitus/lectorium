@@ -122,6 +122,10 @@ export interface StoredSettings {
   calibratedFontLabel: string | null;
   /** 3D Room quality; "flat" forces the static room */
   roomQuality: RoomQuality;
+  /** "HH:MM" target bedtime → Quiet Night wind-down; null = off */
+  bedtime: string | null;
+  /** "HH:MM" one daily reminder cue; null = off */
+  reminderTime: string | null;
 }
 
 export const defaultSettings: StoredSettings = {
@@ -133,6 +137,8 @@ export const defaultSettings: StoredSettings = {
   calibratedFont: null,
   calibratedFontLabel: null,
   roomQuality: "high",
+  bedtime: null,
+  reminderTime: null,
 };
 
 export async function loadSettings(): Promise<StoredSettings> {

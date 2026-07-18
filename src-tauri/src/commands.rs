@@ -10,7 +10,7 @@ use crate::library::scanner;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::MutexGuard;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 fn lock<'a>(db: &'a State<'_, Db>) -> Result<MutexGuard<'a, rusqlite::Connection>, AppError> {
     db.conn
@@ -354,6 +354,59 @@ fn render_markdown(bundle: &repo::ExportBundle) -> String {
 pub struct SettingsPayload {
     pub version: i64,
     pub json: String,
+}
+
+#[tauri::command]
+pub fn backup_now(app: AppHandle, db: State<'_, Db>) -> Result<String, AppError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| AppError::Other("Could not find the app data folder.".into()))?;
+    let path = crate::db::backup_now(&db, &data_dir)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn list_backups(app: AppHandle) -> Result<Vec<crate::db::BackupInfo>, AppError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| AppError::Other("Could not find the app data folder.".into()))?;
+    crate::db::list_backups(&data_dir)
+}
+
+#[tauri::command]
+pub fn restore_backup(app: AppHandle, db: State<'_, Db>, path: String) -> Result<(), AppError> {
+    if !Path::new(&path).is_file() {
+        return Err(AppError::Other(
+            "That backup file could not be found.".into(),
+        ));
+    }
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| AppError::Other("Could not find the app data folder.".into()))?;
+    crate::db::restore_from(&db, &data_dir, Path::new(&path))
+}
+
+/// Import a previously exported `commonplace.json`. Rust reads the chosen
+/// file directly so the WebView never gets arbitrary filesystem access.
+#[tauri::command]
+pub fn import_reading_data(
+    db: State<'_, Db>,
+    path: String,
+) -> Result<repo::ImportReport, AppError> {
+    let p = Path::new(&path);
+    if !p.is_file() {
+        return Err(AppError::Other("That file could not be opened.".into()));
+    }
+    let json = std::fs::read_to_string(p)
+        .map_err(|_| AppError::Other("Lectorium could not read that file.".into()))?;
+    if json.len() > 32 * 1024 * 1024 {
+        return Err(AppError::Other("That file is too large to import.".into()));
+    }
+    let conn = lock(&db)?;
+    repo::import_bundle(&conn, &json)
 }
 
 #[tauri::command]

@@ -27,13 +27,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "Abhinand",
+    "category": "Education",
+    "shortDescription": "A quiet room for books",
+    "longDescription": "Lectorium is a calm, local-first Windows reader for EPUBs, PDFs, and plain text. It makes beginning, returning, understanding, and remembering books unusually frictionless — with no gamification, no telemetry, and everything kept on your computer.",
+    "copyright": "© 2026 Abhinand",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

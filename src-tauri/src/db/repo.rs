@@ -717,6 +717,162 @@ pub struct ExportBundle {
     pub vocabulary: Vec<VocabularyEntry>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    pub imported_entries: i64,
+    pub imported_vocabulary: i64,
+    pub skipped_no_book: i64,
+    pub skipped_duplicate: i64,
+}
+
+/// Import a previously exported bundle. Matches entries to books by exact
+/// (title, first author); re-anchors annotations that reference a book still
+/// present. Skips entries whose book is missing or whose exact quote already
+/// exists for that book (idempotent-ish). Never touches book files.
+pub fn import_bundle(conn: &Connection, json: &str) -> Result<ImportReport, AppError> {
+    let bundle: serde_json::Value = serde_json::from_str(json)
+        .map_err(|_| AppError::Other("That file is not valid Lectorium export JSON.".into()))?;
+    if bundle.get("version").and_then(|v| v.as_i64()) != Some(1) {
+        return Err(AppError::Other(
+            "Unsupported export version. This file was made by a different Lectorium.".into(),
+        ));
+    }
+
+    let mut report = ImportReport {
+        imported_entries: 0,
+        imported_vocabulary: 0,
+        skipped_no_book: 0,
+        skipped_duplicate: 0,
+    };
+
+    let find_book = |title: &str, author: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT id FROM books WHERE title = ?1
+             AND (?2 = '' OR authors LIKE '%' || ?2 || '%') LIMIT 1",
+            params![title, author],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+
+    if let Some(entries) = bundle.get("entries").and_then(|e| e.as_array()) {
+        for e in entries {
+            let title = e.get("bookTitle").and_then(|v| v.as_str()).unwrap_or("");
+            let author = e
+                .get("bookAuthors")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let Some(book_id) = find_book(title, author) else {
+                report.skipped_no_book += 1;
+                continue;
+            };
+            let quote = e.get("exactQuote").and_then(|v| v.as_str());
+            // duplicate guard on exact quote within the same book
+            if let Some(q) = quote {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM annotations WHERE book_id = ?1 AND exact_quote = ?2)",
+                        params![book_id, q],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(false);
+                if exists {
+                    report.skipped_duplicate += 1;
+                    continue;
+                }
+            }
+            let ann = Annotation {
+                id: uuid_like(),
+                book_id,
+                kind: e
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("note")
+                    .to_string(),
+                start_locator_json: e
+                    .get("startLocatorJson")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}")
+                    .to_string(),
+                end_locator_json: None,
+                exact_quote: quote.map(str::to_string),
+                prefix: None,
+                suffix: None,
+                note: e.get("note").and_then(|v| v.as_str()).map(str::to_string),
+                color_token: Some("selection".into()),
+                commonplace_heading: e
+                    .get("commonplaceHeading")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                created_at: None,
+            };
+            add_annotation(conn, &ann)?;
+            report.imported_entries += 1;
+        }
+    }
+
+    if let Some(vocab) = bundle.get("vocabulary").and_then(|v| v.as_array()) {
+        for v in vocab {
+            let word = v
+                .get("displayedWord")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if word.is_empty() {
+                continue;
+            }
+            // vocab has no book title in the bundle; attach to any book if the
+            // exact sentence already anchors, else skip cleanly
+            let sentence = v.get("sentence").and_then(|x| x.as_str()).unwrap_or("");
+            let book_id: Option<String> = conn
+                .query_row("SELECT id FROM books LIMIT 1", [], |r| r.get(0))
+                .optional()?;
+            let Some(book_id) = book_id else {
+                report.skipped_no_book += 1;
+                continue;
+            };
+            let entry = VocabularyEntry {
+                id: uuid_like(),
+                book_id,
+                normalized_word: word.to_lowercase(),
+                displayed_word: word.to_string(),
+                sentence: sentence.to_string(),
+                definition: v
+                    .get("definition")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string),
+                locator_json: v
+                    .get("locatorJson")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("{}")
+                    .to_string(),
+                note: v.get("note").and_then(|x| x.as_str()).map(str::to_string),
+                created_at: None,
+            };
+            add_vocabulary(conn, &entry)?;
+            report.imported_vocabulary += 1;
+        }
+    }
+    Ok(report)
+}
+
+/// UUID v4 without pulling uuid into this module — random bytes hex-formatted.
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let r = nanos
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    format!("imp-{:016x}-{:08x}", r, (nanos as u64) & 0xffff_ffff)
+}
+
 pub fn set_reading_mode(conn: &Connection, book_id: &str, mode: &str) -> Result<(), AppError> {
     if !matches!(mode, "story" | "study" | "contemplative") {
         return Err(AppError::Other("Unknown reading mode.".into()));

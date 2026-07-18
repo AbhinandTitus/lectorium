@@ -19,9 +19,9 @@ Milestones 0–2 are complete and verified; the Reader is already good enough to
 | **M2 — Reader depth** | ✅ Complete | TOC, search, selection toolbar, annotations + highlights, bookmarks, footnotes, fore-edge, **PDF Reflow** (reversible, page-preserving), Story/Study/Contemplative modes, typography calibration, **malicious-EPUB sanitizer** (verified inert), Malayalam end-to-end, 200% scaling |
 | **M3 — Commonplace + Recall** | ✅ Complete | Commonplace space (search/heading/kind facets), cross-links, Markdown/JSON export with source locators, vocabulary, opt-in non-scored Recall |
 | **M4 — 3D Reading Room** | ✅ Complete | R3F room (walnut desk, amber lamp, real cover, instanced shelves), demand rendering, ~600ms crossfade, unmount on Reader entry, High/Low/2D tiers, WebGL fallback |
-| **M5 — Hardening + release** | ⏳ In progress | Large-library/PDF tests, installer, clean-machine checklist, `RELEASE_CHECKLIST.md` |
+| **M5 — Hardening + release** | ⏳ In progress | Backup/restore + import, Settings sheet, Quiet Night, 10k-file benchmark, NSIS installer, `RELEASE_CHECKLIST.md` — done; final manual QA on the release binary remains |
 
-All automated checks pass: `pnpm verify` (22 Vitest tests incl. the security sanitizer suite), `cargo fmt/clippy/test` (10 Rust tests). See [CHANGELOG.md](CHANGELOG.md) for the milestone history.
+All automated checks pass: `pnpm verify` (27 Vitest tests incl. the security sanitizer and Quiet Night suites), `cargo fmt/clippy/test` (12 Rust tests). See [CHANGELOG.md](CHANGELOG.md) for the milestone history.
 
 ### What already works (verified live in the running app)
 

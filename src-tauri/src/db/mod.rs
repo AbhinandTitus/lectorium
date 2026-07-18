@@ -40,6 +40,99 @@ pub fn schema_version(conn: &Connection) -> Result<i64, AppError> {
     Ok(version)
 }
 
+/// Take an on-demand atomic backup (VACUUM INTO) into the backups dir and
+/// rotate. Returns the backup path.
+pub fn backup_now(db: &Db, app_data_dir: &Path) -> Result<PathBuf, AppError> {
+    let backup_dir = app_data_dir.join("backups");
+    fs::create_dir_all(&backup_dir)?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| AppError::Other("Lectorium's database is busy. Please try again.".into()))?;
+    let target = unique_path(backup_dir.join(format!("lectorium-manual-{}.db", time_stamp())));
+    conn.execute("VACUUM INTO ?1", [target.to_string_lossy().to_string()])?;
+    drop(conn);
+    rotate_backups(&backup_dir)?;
+    Ok(target)
+}
+
+/// List available backups (newest first) with size and mtime.
+pub fn list_backups(app_data_dir: &Path) -> Result<Vec<BackupInfo>, AppError> {
+    let backup_dir = app_data_dir.join("backups");
+    if !backup_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut items: Vec<BackupInfo> = fs::read_dir(&backup_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "db"))
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            Some(BackupInfo {
+                path: e.path().to_string_lossy().into_owned(),
+                name: e.file_name().to_string_lossy().into_owned(),
+                bytes: meta.len(),
+            })
+        })
+        .collect();
+    items.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(items)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub path: String,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// Restore from a backup file: validate it opens and is a Lectorium DB, back
+/// up the current DB first, then atomically replace. The connection is
+/// swapped in place so the app keeps its managed state.
+pub fn restore_from(db: &Db, app_data_dir: &Path, backup_path: &Path) -> Result<(), AppError> {
+    // validate the candidate opens and has our schema
+    {
+        let candidate = Connection::open(backup_path)?;
+        let v: i64 = candidate.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if v <= 0
+            || v > migrations::MIGRATIONS
+                .last()
+                .map(|m| m.version)
+                .unwrap_or(0)
+        {
+            return Err(AppError::Other(
+                "That file is not a compatible Lectorium backup.".into(),
+            ));
+        }
+        candidate.query_row("SELECT count(*) FROM books", [], |r| r.get::<_, i64>(0))?;
+    }
+
+    // snapshot current state before replacing
+    backup_now(db, app_data_dir)?;
+
+    let mut guard = db
+        .conn
+        .lock()
+        .map_err(|_| AppError::Other("Lectorium's database is busy.".into()))?;
+    // close the live connection by replacing it with a temporary in-memory one
+    *guard = Connection::open_in_memory()?;
+    // atomically replace the file, then reopen
+    let staging = db.db_path.with_extension("restoring");
+    fs::copy(backup_path, &staging)?;
+    // remove WAL/SHM siblings so the restored file is authoritative
+    let _ = fs::remove_file(db.db_path.with_extension("db-wal"));
+    let _ = fs::remove_file(db.db_path.with_extension("db-shm"));
+    fs::rename(&staging, &db.db_path)?;
+
+    let mut conn = Connection::open(&db.db_path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    migrate(&mut conn, &db.db_path, app_data_dir)?;
+    *guard = conn;
+    tracing::info!(?backup_path, "database restored from backup");
+    Ok(())
+}
+
 fn migrate(conn: &mut Connection, db_path: &Path, app_data_dir: &Path) -> Result<(), AppError> {
     let current = schema_version(conn)?;
     let pending: Vec<_> = migrations::MIGRATIONS
@@ -194,6 +287,57 @@ mod tests {
             .unwrap();
         assert_eq!(title, "A Book");
         drop(conn);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backup_and_restore_roundtrip() {
+        let dir = temp_dir("backup");
+        let db = open(&dir).unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO books (id, canonical_path, source_format, reading_format, title)
+                 VALUES ('b1','C:/a.epub','epub','epub','Original Title')",
+                [],
+            )
+            .unwrap();
+        }
+        // take a backup that captures the original title
+        let backup = backup_now(&db, &dir).unwrap();
+        assert!(backup.exists());
+
+        // mutate after the backup
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("UPDATE books SET title = 'Changed' WHERE id='b1'", [])
+                .unwrap();
+        }
+
+        // restore should bring back the original title
+        restore_from(&db, &dir, &backup).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM books WHERE id='b1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Original Title");
+        // schema still migrated after restore
+        assert_eq!(
+            schema_version(&conn).unwrap(),
+            migrations::MIGRATIONS.last().unwrap().version
+        );
+        drop(conn);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_rejects_non_lectorium_file() {
+        let dir = temp_dir("badrestore");
+        let db = open(&dir).unwrap();
+        let junk = dir.join("not-a-db.db");
+        fs::write(&junk, b"this is not sqlite").unwrap();
+        let result = restore_from(&db, &dir, &junk);
+        assert!(result.is_err(), "must refuse a non-Lectorium file");
         let _ = fs::remove_dir_all(dir);
     }
 

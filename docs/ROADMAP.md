@@ -74,7 +74,11 @@ Checks green: `pnpm verify` (22 vitest), `cargo fmt/clippy/test` (10). New Rust 
 
 Checks green: `pnpm verify` (22 vitest), `cargo fmt/clippy/test` (10). Deps added: three, @react-three/fiber, @react-three/drei (all MIT).
 
-## Milestone 5 — Hardening and Windows handoff
+## Milestone 5 — Hardening and Windows handoff  ⟵ IN PROGRESS
 
-- [ ] 10k-library + large-PDF tests; crash recovery; backup/restore; installer; icon; first-run; `--resume` shortcut
-- [ ] Manual QA at target resolutions/themes; clean-machine checklist; RELEASE_CHECKLIST.md with actual results
+- [x] Backup/restore: on-demand `backup_now` (VACUUM INTO + rotation), `list_backups`, `restore_backup` (validates the file is a compatible Lectorium DB, backs up current data first, then atomically replaces and re-migrates). Import path: `import_reading_data` reads a chosen `commonplace.json` in Rust (no FS exposure to the WebView), validates version, matches books by title/author, dedups, and reports counts. Rust tests: backup roundtrip + reject-non-Lectorium-file.
+- [x] Settings sheet (not a fifth destination): bedtime → **Quiet Night** wind-down, one daily reminder time, direct-resume toggle, and all data actions (export/import/backup/restore). Quiet Night unit-tested (5 cases incl. midnight wrap).
+- [x] `--resume` launch + direct-resume preference open the most recent book (M1; surfaced in Settings here).
+- [x] **10,000-file scan** benchmarked (76.8 s / ~130 files/s, debug build) on a background thread; UI stays responsive; Stacks virtualization stays smooth at 10k rows. Bottleneck (per-file autocommit) and the batching fix are recorded in [PERFORMANCE.md](PERFORMANCE.md).
+- [x] Installer configured (NSIS, currentUser, publisher/description/icon) and [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) written with the real automated-check results filled in.
+- [ ] **Remaining for a true RC:** run the release-build installer on a clean account and complete the manual-QA/resolution/Malayalam/security boxes in RELEASE_CHECKLIST.md on that binary; profile launch/resume budgets on the release build; (optional) configure code signing — currently **not** configured and not claimed.

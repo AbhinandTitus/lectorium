@@ -2,6 +2,15 @@
 
 All notable changes to Lectorium, grouped by milestone. This project is pre-1.0; versions are milestone tags rather than semantic releases. Dates are the build dates on the development machine.
 
+## Milestone 5 — Hardening and Windows handoff — 2026-07-18 (in progress)
+
+- **Backup & restore:** on-demand atomic backup (VACUUM INTO + rotation); restore validates the file is a compatible Lectorium database, backs up current data first, then atomically replaces and re-migrates.
+- **Import reading data:** reads a chosen exported `commonplace.json` entirely in Rust (the WebView never gets filesystem access), validates the version, matches entries to books by title/author, dedups by exact quote, and reports imported/skipped counts.
+- **Settings sheet** (not a fifth destination): target bedtime → **Quiet Night** wind-down (warm/dark, decorative motion frozen, Recall deferred — never locks you out), one optional daily reminder time, a direct-resume toggle, and all the data actions.
+- **Large-library benchmark:** a 10,000-file scan runs on a background thread with the UI responsive; the Stacks virtualized list stays smooth at 10k rows. Numbers and the batching optimization are recorded in `docs/PERFORMANCE.md`.
+- **Installer** configured (NSIS, per-user install) and `docs/RELEASE_CHECKLIST.md` written with the automated-check results filled in and manual-QA/signing boxes left to complete on the release binary. Code signing is **not** configured and is not claimed.
+- Rust tests added: backup roundtrip and reject-non-Lectorium-file; Quiet Night has 5 frontend unit tests.
+
 ## Milestone 4 — 3D Reading Room — 2026-07-18
 
 - A restrained **3D Reading Room** behind the same actions: a walnut desk under an angled brass lamp with a shaded amber cone, the current book resting cover-up with its **real cover texture**, up to two companions, and shadowed shelves (a single InstancedMesh — never thousands of meshes).

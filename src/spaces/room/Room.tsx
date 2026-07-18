@@ -3,6 +3,8 @@ import { identity } from "../../config/identity";
 import { useLibrary } from "../../state/library";
 import { useNavigation } from "../../state/navigation";
 import { BookCover } from "../../components/BookCover";
+import { Settings } from "../../app/Settings";
+import { isQuietNight } from "../../config/quietNight";
 import { webglAvailable } from "./Room3D";
 import "./room.css";
 
@@ -25,16 +27,17 @@ export function Room() {
   const companions = desk.filter((b) => b !== current).slice(0, 2);
 
   const [webgl] = useState(webglAvailable);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const use3D = webgl && settings.roomQuality !== "flat";
 
-  // Quiet Night placeholder: wired to a bedtime window in M5. Reduced motion
-  // also freezes the scene.
+  // Quiet Night (bedtime wind-down) or reduced motion freezes decorative motion.
   const reducedMotion = useMemo(
     () =>
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
+  const quietNight = reducedMotion || isQuietNight(settings.bedtime);
 
   return (
     <main className="room" aria-label={identity.name}>
@@ -44,7 +47,7 @@ export function Room() {
             current={current}
             companions={companions}
             quality={settings.roomQuality}
-            quietNight={reducedMotion}
+            quietNight={quietNight}
             onOpen={openBook}
           />
         </Suspense>
@@ -113,9 +116,12 @@ export function Room() {
         <nav className="room-secondary" aria-label="Secondary">
           <button onClick={() => goTo("stacks")}>Stacks</button>
           <button onClick={() => goTo("commonplace")}>Commonplace</button>
+          <button onClick={() => setSettingsOpen(true)}>Settings</button>
           {webgl && <RoomQualityMenu />}
         </nav>
       </div>
+
+      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
 
       {status && (
         <p className="room-version" aria-hidden="true">

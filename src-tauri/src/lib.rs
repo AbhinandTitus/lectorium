@@ -12,6 +12,18 @@ pub fn db_open_for_tools(dir: &std::path::Path) -> Result<db::Db, error::AppErro
     db::open(dir)
 }
 
+/// Dev-only scan harness for the bench example. Returns (found, added).
+pub fn run_scan_for_tools(
+    db: &db::Db,
+    covers_dir: &std::path::Path,
+    root_id: i64,
+    root: &std::path::Path,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> Result<(u64, u64), error::AppError> {
+    let o = library::scanner::run_scan(db, covers_dir, root_id, root, on_progress)?;
+    Ok((o.found, o.added))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -78,6 +90,10 @@ pub fn run() {
             commands::recall_available,
             commands::record_recall,
             commands::export_commonplace,
+            commands::backup_now,
+            commands::list_backups,
+            commands::restore_backup,
+            commands::import_reading_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
