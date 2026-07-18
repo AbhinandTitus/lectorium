@@ -1,0 +1,265 @@
+.reader {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-page);
+  overflow: hidden;
+}
+
+.reader-empty {
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: var(--color-text-secondary);
+}
+
+.reader-chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 1.1rem;
+  transition: opacity 300ms ease;
+}
+
+.reader-chrome-top {
+  top: 0;
+  background: linear-gradient(var(--color-page), transparent);
+}
+
+.reader-chrome.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.reader-chrome button {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.reader-chrome button:hover {
+  color: var(--color-text-primary);
+}
+
+.reader-chrome-title {
+  flex: 1;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reader-stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.reader-page-host {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.2rem 0.5rem;
+  overflow: hidden;
+}
+
+/* generous, invisible page-turn zones — no precise hover required */
+.reader-turn {
+  width: 72px;
+  flex-shrink: 0;
+  opacity: 0;
+}
+
+.pdf-page-canvas {
+  border-radius: 2px;
+  box-shadow: 0 2px 14px rgb(0 0 0 / 30%);
+}
+
+.text-engine-page {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  user-select: text;
+}
+
+.text-engine-flow {
+  height: 100%;
+  column-fill: auto;
+  transition: transform 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-engine-flow {
+    transition: none;
+  }
+}
+
+.text-engine-flow p {
+  margin: 0 0 0 0;
+  text-indent: 1.4em;
+}
+
+.text-engine-flow p:first-child,
+.text-engine-flow h1 + p,
+.text-engine-flow h2 + p,
+.text-engine-flow h3 + p,
+.text-engine-flow blockquote + p {
+  text-indent: 0;
+}
+
+.text-engine-flow h1,
+.text-engine-flow h2,
+.text-engine-flow h3 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.6em;
+  break-after: avoid;
+}
+
+.text-engine-flow h1 {
+  font-size: 1.45em;
+}
+
+.text-engine-flow h2 {
+  font-size: 1.2em;
+}
+
+.text-engine-flow h3 {
+  font-size: 1.05em;
+}
+
+.text-engine-flow blockquote {
+  margin: 1em 0 1em 1.2em;
+  padding-left: 1em;
+  border-left: 2px solid var(--color-hairline);
+  color: var(--color-text-secondary);
+}
+
+.text-engine-flow pre,
+.text-engine-flow code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.88em;
+}
+
+.text-engine-flow pre {
+  padding: 0.8em 1em;
+  background: var(--color-raised);
+  border-radius: var(--radius-small);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.text-engine-flow ul,
+.text-engine-flow ol {
+  margin: 0.6em 0 0.6em 1.6em;
+}
+
+.reader-ribbon {
+  position: absolute;
+  top: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.7rem 1.4rem;
+  background: color-mix(in srgb, var(--color-raised) 88%, transparent);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-large);
+  backdrop-filter: blur(6px);
+}
+
+.reader-ribbon-title {
+  font-size: 0.92rem;
+}
+
+.reader-ribbon-section {
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.reader-error {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: var(--color-text-secondary);
+}
+
+.reader-error button {
+  color: var(--color-accent);
+}
+
+.appearance-sheet {
+  position: absolute;
+  top: 3rem;
+  right: 1.2rem;
+  z-index: 14;
+  min-width: 260px;
+  padding: 1.1rem 1.3rem;
+  background: var(--color-raised);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-large);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 35%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.appearance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.appearance-row > span {
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.appearance-row div {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.appearance-row button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.appearance-row button.is-active {
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+}
+
+.appearance-hint {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.appearance-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.7rem;
+  color: var(--color-text-secondary);
+}

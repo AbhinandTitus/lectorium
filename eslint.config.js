@@ -20,6 +20,10 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "@typescript-eslint/switch-exhaustiveness-check": "error",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
       "no-restricted-globals": [
         "error",
         {
@@ -42,8 +46,10 @@ export default tseslint.config(
     },
   },
   {
-    // The one sanctioned network seam (created in M2): explicit opt-in online dictionary.
-    files: ["src/services/dictionary/online/**"],
+    // Sanctioned fetch seams: the local book:// protocol (not a network
+    // call — served by our own Rust process) and, from M2, the explicit
+    // opt-in online dictionary adapter.
+    files: ["src/services/bookData.ts", "src/services/dictionary/online/**"],
     rules: {
       "no-restricted-globals": "off",
       "no-restricted-syntax": "off",

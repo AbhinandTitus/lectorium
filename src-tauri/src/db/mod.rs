@@ -4,6 +4,7 @@
 //! borrow the shared connection from managed state.
 
 mod migrations;
+pub mod repo;
 
 use crate::error::AppError;
 use rusqlite::Connection;
