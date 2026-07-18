@@ -49,6 +49,20 @@ fn main() {
             .unwrap();
             println!("desk set");
         }
+        "remove-root" => {
+            // Removes a library root and every book under it (test cleanup).
+            let pattern = format!("%{}%", args[3]);
+            let books = conn
+                .execute("DELETE FROM books WHERE canonical_path LIKE ?1", [&pattern])
+                .unwrap();
+            let roots = conn
+                .execute(
+                    "DELETE FROM library_roots WHERE canonical_path LIKE ?1",
+                    [&pattern],
+                )
+                .unwrap();
+            println!("removed {books} books, {roots} roots matching {}", args[3]);
+        }
         "dump" => {
             let mut stmt = conn
                 .prepare(

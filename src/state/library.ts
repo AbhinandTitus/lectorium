@@ -33,6 +33,11 @@ export const useLibrary = create<LibraryState>((set, get) => ({
       const desk = await lib.deskBooks();
       set({ desk });
       await lib.onScanEvent((ev) => get().handleScanEvent(ev));
+      // Direct resume: `--resume` launch or the user's standing preference.
+      if ((status.resumeRequested || settings.directResume) && status.lastLocationBookId) {
+        const { useNavigation } = await import("./navigation");
+        useNavigation.getState().openBook(status.lastLocationBookId);
+      }
     }
   },
 

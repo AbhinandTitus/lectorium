@@ -11,8 +11,11 @@ Budgets are in [ARCHITECTURE.md](ARCHITECTURE.md#performance-budgets-measured-in
 
 | Date | Build | Scenario | Result | Method | Notes |
 |---|---|---|---|---|---|
-| — | — | no measurements recorded yet | — | — | budgets unverified until M1 |
+| 2026-07-18 | dev (unoptimized) | EPUB open → visible text | ~2–4 s observed | manual, dev build | includes debug-build overhead + full-file fetch; measure properly on release build (M5) |
+| 2026-07-18 | dev (unoptimized) | PDF page render (3-page fixture) | < 1 s per page observed | manual, dev build | ranged streaming confirmed (206 responses) |
+
+Budgets remain **unverified** against release builds — real numbers land in M5 hardening on a release binary. Dev observations above are directional only, not claims.
 
 ## Known bottlenecks
 
-(none recorded yet)
+- EPUB opens by fetching the whole file into an ArrayBuffer (epub.js input). Fine for typical EPUBs; very large ones should stream or open via chunked source — revisit at M5 with a large-book fixture.

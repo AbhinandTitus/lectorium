@@ -16,17 +16,27 @@ Evidence links (files/tests/results) are required before a box is checked. No va
 
 **Acceptance met:** dev app launches on WebView2; all checks green. CSP set in tauri.conf.json; eslint forbids network APIs outside the future dictionary adapter.
 
-## Milestone 1 — Library core and complete plain reader shell
+## Milestone 1 — Library core and complete plain reader shell  ✓ COMPLETE (2026-07-18)
 
-- [ ] Folder grant + persisted scope; recursive background scan; metadata queue
-- [ ] SQLite persistence for books/locations; covers + deterministic typographic fallback covers
-- [ ] Stacks: search/filter/status/desk roles; missing-file handling
-- [ ] EPUB/PDF/TXT/Markdown open + render; Malayalam font fallback; Unicode-safe metadata/search
-- [ ] Exact autosave/resume (restart-proof)
-- [ ] Ember/Paper themes; Focus/Open/Air presets; pagination; keyboard nav
-- [ ] Static Room (no 3D)
+Known limitations carried to M2: EPUB textQuote anchors captured only by annotation flows (resume uses CFI+coarse today); PDF night mode is a mild luminance filter (Warm Dim/Smart Dark are M2); two-page Spread not yet offered; remaining reading fonts (Source Serif 4, EB Garamond, Atkinson) bundle with M2 calibration; file watcher replaced by startup rescan until M2.
 
-**Acceptance:** relaunch lands on exact page/CFI for EPUB and PDF; missing files lose no data; no white flash in Ember.
+- [x] Folder grant (dialog) + recursive background scan with fingerprint triage; startup rescan — [scanner.rs](../src-tauri/src/library/scanner.rs), 5 integration tests (add/rescan/EPUB meta/move-relink/missing)
+- [x] SQLite persistence ([repo.rs](../src-tauri/src/db/repo.rs)); EPUB covers extracted; deterministic typographic fallback covers ([BookCover.tsx](../src/components/BookCover.tsx))
+- [x] Stacks: search/filters/virtualized list/preview drawer/desk roles with 3-book conflict flow; "Find this file" relink — [Stacks.tsx](../src/spaces/stacks/Stacks.tsx)
+- [x] EPUB/PDF/TXT/Markdown engines behind ReaderEngine seam, lazy-loaded — [engines/](../src/spaces/reader/engines/); bundled Malayalam fonts injected into EPUB iframes; Malayalam metadata verified Unicode-safe in Rust tests
+- [x] Locator envelopes (ADR 0004) + debounced autosave, flush on blur/close — [Reader.tsx](../src/spaces/reader/Reader.tsx)
+- [x] Ember/Paper themes; Focus/Open/Air presets; pagination; keyboard nav (arrows/space/F/A/Ctrl±/Esc-never-closes)
+- [x] Static Room with desk books + Continue reading; onboarding (3 screens, all skippable)
+- [x] **Acceptance verified live (2026-07-18, dev build on this machine):**
+  - EPUB exact resume: opened fixture EPUB → paged to ch.3 (CFI `epubcfi(/6/6!/4/2/1:0)` autosaved) → closed app (window close) → relaunched → reopened → landed on Chapter Three, same CFI in `book_locations`.
+  - PDF exact resume: opened 3-page fixture PDF via Stacks → next page (locator `{pageIndex:1,pageLabel:"2"}` autosaved) → closed app → relaunched → reopened → Reader chrome shows "Page 2".
+  - Missing files lose no data: Rust integration tests (`scanner.rs::vanished_file_is_marked_missing_and_loses_nothing`, `moved_file_is_relinked_and_keeps_reading_position`).
+  - Ember no-white-flash: window `backgroundColor #12100E` + pre-bundle inline Ember guard + Ember CSS fallbacks; observed dark across launch/open/read/close in desktop captures. (Automated frame-capture test lands with Playwright in M2.)
+  - Real-library smoke: user's own folder scanned in the live app; real EPUB cover extracted and shown in Room; book placed on desk via the UI.
+
+Fixed during live verification: book:// protocol needed CORS headers (page origin ≠ book.localhost — [protocol.rs](../src-tauri/src/protocol.rs)); fallback-cover percentage padding exploded against wide parents ([bookCover.css](../src/components/bookCover.css)); EPUB content links now warm+underlined, never blue; reflowable measure capped (~66ch) on wide windows.
+
+Checks green (2026-07-18): `pnpm verify` (typecheck+lint+format+16 vitest), `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (10).
 
 ## Milestone 2 — Reader depth
 

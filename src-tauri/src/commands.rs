@@ -25,6 +25,10 @@ pub struct AppStatus {
     pub db_path: String,
     pub book_count: i64,
     pub has_roots: bool,
+    /// launched with `--resume` (shortcut / deep-link direct resume)
+    pub resume_requested: bool,
+    /// book with the most recently updated reading location
+    pub last_location_book_id: Option<String>,
 }
 
 /// Startup health check: proves IPC and the migrated database both work.
@@ -37,6 +41,8 @@ pub fn app_status(db: State<'_, Db>) -> Result<AppStatus, AppError> {
         db_path: db.db_path.to_string_lossy().into_owned(),
         book_count: repo::count_books(&conn)?,
         has_roots: !repo::list_roots(&conn)?.is_empty(),
+        resume_requested: std::env::args().any(|a| a == "--resume"),
+        last_location_book_id: repo::most_recent_book_id(&conn)?,
     })
 }
 

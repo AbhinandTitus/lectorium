@@ -328,6 +328,19 @@ pub fn relink_book(conn: &Connection, book_id: &str, new_path: &str) -> Result<(
     Ok(())
 }
 
+/// The book whose reading location was most recently updated.
+pub fn most_recent_book_id(conn: &Connection) -> Result<Option<String>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT l.book_id FROM book_locations l
+             JOIN books b ON b.id = l.book_id AND b.missing_since IS NULL
+             ORDER BY l.updated_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 pub fn get_settings(conn: &Connection) -> Result<Option<String>, AppError> {
     Ok(conn
         .query_row("SELECT json FROM settings WHERE id = 1", [], |r| r.get(0))

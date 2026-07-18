@@ -296,7 +296,19 @@ export function Reader() {
             aria-label="Previous page"
             tabIndex={-1}
           />
-          <div className="reader-page-host" ref={containerRef} />
+          <div
+            className="reader-page-host"
+            ref={containerRef}
+            style={
+              book && book.readingFormat !== "pdf"
+                ? // measure limit: ~0.53em average glyph width for the serif
+                  // stacks; refined per-font at M2 calibration
+                  {
+                    maxWidth: `${Math.round(typography.maxWidthCh * 0.53 * typography.fontSizePx)}px`,
+                  }
+                : undefined
+            }
+          />
           <button
             className="reader-turn reader-turn-next"
             onClick={() => turn(1)}

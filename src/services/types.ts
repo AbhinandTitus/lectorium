@@ -55,6 +55,8 @@ export interface AppStatus {
   dbPath: string;
   bookCount: number;
   hasRoots: boolean;
+  resumeRequested: boolean;
+  lastLocationBookId: string | null;
 }
 
 export type ScanEvent =

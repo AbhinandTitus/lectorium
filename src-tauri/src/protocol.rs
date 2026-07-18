@@ -28,6 +28,20 @@ pub fn handle(
 }
 
 fn serve(app: &AppHandle, request: &Request<Vec<u8>>) -> Result<Response<Vec<u8>>, StatusCode> {
+    // The WebView page origin (localhost:1420 in dev, tauri.localhost in
+    // prod) differs from book.localhost, so responses need CORS headers.
+    // Only our own WebView can reach this scheme; path scoping below is the
+    // real security boundary.
+    if request.method() == tauri::http::Method::OPTIONS {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, OPTIONS")
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Range, Content-Type")
+            .body(Vec::new())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     let path = request.uri().path();
     let mut segments = path.trim_start_matches('/').splitn(2, '/');
     let kind = segments.next().unwrap_or_default();
@@ -115,7 +129,12 @@ fn serve(app: &AppHandle, request: &Request<Vec<u8>>) -> Result<Response<Vec<u8>
     let builder = Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CACHE_CONTROL, "no-store");
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            "Content-Range, Accept-Ranges, Content-Length",
+        );
 
     match range {
         Some((start, end)) => {

@@ -23,6 +23,8 @@ export class EpubEngine implements ReaderEngine {
   private book: Book | null = null;
   private rendition: Rendition | null = null;
   private language: string | null = null;
+  private typography: TypographySettings | null = null;
+  private theme: ThemeName = "ember";
 
   async open(args: EngineOpenArgs): Promise<void> {
     const bytes = await fetchBookBytes(args.fileUrl);
@@ -105,32 +107,46 @@ export class EpubEngine implements ReaderEngine {
   }
 
   applyTypography(t: TypographySettings): void {
-    if (!this.rendition) return;
+    this.typography = t;
+    this.injectContentStyles();
+  }
+
+  applyTheme(theme: ThemeName): void {
+    this.theme = theme;
+    this.injectContentStyles();
+  }
+
+  /** One combined rule set — epub.js replaces the default theme wholesale. */
+  private injectContentStyles(): void {
+    if (!this.rendition || !this.typography) return;
+    const t = this.typography;
+    const palette = themes[this.theme];
     const family = this.language ? stackFor(this.language) : t.fontFamily;
     this.rendition.themes.default({
       body: {
         "font-family": `${family} !important`,
         "font-size": `${t.fontSizePx}px !important`,
         "line-height": `${t.lineHeight} !important`,
-        // column width is handled by epub.js; keep measure via padding
+        color: `${palette.textPrimary} !important`,
+        background: `${palette.page} !important`,
         "text-align": "left",
         hyphens: "auto",
       },
       p: {
         "line-height": `${t.lineHeight} !important`,
       },
+      // warm, underlined links — never bright blue at night, and
+      // distinguishable by more than color (PRODUCT.md)
+      a: {
+        color: `${palette.accent} !important`,
+        "text-decoration": "underline",
+        "text-underline-offset": "2px",
+      },
       "::selection": {
-        background: "var(--selection, #5A452D)",
+        background: palette.selection,
       },
     });
     this.rendition.themes.fontSize(`${t.fontSizePx}px`);
-  }
-
-  applyTheme(theme: ThemeName): void {
-    if (!this.rendition) return;
-    const palette = themes[theme];
-    this.rendition.themes.override("color", palette.textPrimary);
-    this.rendition.themes.override("background", palette.page);
   }
 
   destroy(): void {
