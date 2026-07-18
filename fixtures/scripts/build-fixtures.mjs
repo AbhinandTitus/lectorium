@@ -222,4 +222,28 @@ out("misc/sample.txt", SAMPLE_TXT);
 out("misc/sample.md", SAMPLE_MD);
 out("misc/malformed.bin", malformedBytes());
 
+// ---------- malicious fixtures (ADR 0005 verification) ----------
+// A chapter that tries: inline script, event-handler JS, javascript: URL,
+// remote image/stylesheet beacons. All of it must render inert.
+
+const MALICIOUS_CHAPTER = `<h1>Malicious Chapter</h1>
+<script>window.__pwned = 1; parent.__pwned = 1;</script>
+<p onmouseover="window.__pwned=2" id="hostile">Hover text with a handler.</p>
+<p><a href="javascript:window.__pwned=3">a javascript: link</a></p>
+<p><img src="https://attacker.invalid/beacon.png" alt="remote beacon"/></p>
+<p><a href="https://attacker.invalid/phish">an external link</a></p>
+<style>@import url("https://attacker.invalid/style.css");</style>
+<p>Visible benign text proves the page still renders.</p>`;
+
+out(
+  "epub/malicious-script.epub",
+  buildEpub({
+    id: "6f1c2b7e-00ff-4aff-b000-0000000000ff",
+    lang: "en",
+    title: "Malicious Script Fixture",
+    author: "Lectorium Fixtures",
+    chapters: [{ title: "Malicious Chapter", body: MALICIOUS_CHAPTER }],
+  }),
+);
+
 console.log("done");

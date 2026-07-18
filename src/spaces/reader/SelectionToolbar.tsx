@@ -10,6 +10,7 @@ export function SelectionToolbar({
   selection,
   onHighlight,
   onNote,
+  onDefine,
   onKeep,
   onCopy,
   onDismiss,
@@ -17,6 +18,7 @@ export function SelectionToolbar({
   selection: EngineSelection;
   onHighlight: () => void;
   onNote: () => void;
+  onDefine: () => void;
   onKeep: () => void;
   onCopy: () => void;
   onDismiss: () => void;
@@ -44,6 +46,7 @@ export function SelectionToolbar({
     >
       <button onClick={onHighlight}>Highlight</button>
       <button onClick={onNote}>Note</button>
+      <button onClick={onDefine}>Define</button>
       <button onClick={onKeep}>Keep</button>
       <button onClick={onCopy}>Copy</button>
     </div>

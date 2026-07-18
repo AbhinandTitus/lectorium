@@ -70,4 +70,17 @@ export interface ReaderEngine {
   onSelection(handler: (sel: EngineSelection | null) => void): void;
   /** paint stored highlights; called after open and after each render */
   setHighlights(annotations: EngineAnnotation[]): void;
+  /** footnote reference activated (EPUB); no-op elsewhere */
+  onFootnote?(handler: (note: { text: string; rect: DOMRect }) => void): void;
+
+  // --- PDF-only presentation controls (undefined on other engines) ---
+  /** analyze suitability for the reversible Reflow view */
+  getReflow?(): Promise<{
+    confidence: "high" | "low";
+    reason: string | null;
+    textUnavailable: boolean;
+    blocks: unknown[];
+  } | null>;
+  setViewMode?(mode: "original" | "reflow"): Promise<void>;
+  getViewMode?(): "original" | "reflow";
 }

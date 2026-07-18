@@ -2,8 +2,9 @@ import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { ThemeName } from "../../../config/tokens";
-import type { TypographySettings } from "../../../config/typography";
+import { stackFor, type TypographySettings } from "../../../config/typography";
 import type { LocatorEnvelope, TextQuote } from "../locator";
+import { analyzeReflow, type ReflowResult } from "./pdfReflow";
 import type {
   EngineAnnotation,
   EngineOpenArgs,
@@ -37,11 +38,18 @@ export class PdfEngine implements ReaderEngine {
   private theme: ThemeName = "ember";
   private highlights: EngineAnnotation[] = [];
   private selectionListener: (() => void) | null = null;
+  private viewMode: "original" | "reflow" = "original";
+  private reflow: ReflowResult | null = null;
+  private reflowContainer: HTMLElement | null = null;
+  private typography: TypographySettings | null = null;
+  private language: string | null = null;
 
   async open(args: EngineOpenArgs): Promise<void> {
     this.container = args.container;
     this.notify = args.onLocatorChanged;
     this.theme = args.theme;
+    this.typography = args.typography;
+    this.language = args.book.language;
 
     this.loadingTask = pdfjs.getDocument({
       url: args.fileUrl,
@@ -194,23 +202,126 @@ export class PdfEngine implements ReaderEngine {
     } else {
       this.pageIndex = 0;
     }
-    await this.renderCurrent();
+    if (this.viewMode === "reflow") {
+      this.scrollReflowToPage();
+    } else {
+      await this.renderCurrent();
+    }
   }
 
   async next(): Promise<void> {
+    if (this.viewMode === "reflow") {
+      this.reflowContainer?.scrollBy({ top: this.reflowContainer.clientHeight * 0.9 });
+      return;
+    }
     if (!this.doc || this.pageIndex >= this.doc.numPages - 1) return;
     this.pageIndex += 1;
     await this.renderCurrent();
   }
 
   async prev(): Promise<void> {
+    if (this.viewMode === "reflow") {
+      this.reflowContainer?.scrollBy({ top: -this.reflowContainer.clientHeight * 0.9 });
+      return;
+    }
     if (this.pageIndex <= 0) return;
     this.pageIndex -= 1;
     await this.renderCurrent();
   }
 
-  applyTypography(_t: TypographySettings): void {
-    // Fixed layout: typography applies to the Reflow view, not Original.
+  // ---- Reflow (derived view; never modifies the file — ADR 0003) ----
+
+  /** Analyze once and cache; the shell reads confidence to warn the user. */
+  async getReflow(): Promise<ReflowResult | null> {
+    if (!this.doc) return null;
+    this.reflow ??= await analyzeReflow(this.doc);
+    return this.reflow;
+  }
+
+  async setViewMode(mode: "original" | "reflow"): Promise<void> {
+    if (mode === this.viewMode) return;
+    this.viewMode = mode;
+    if (mode === "reflow") {
+      await this.renderReflow();
+    } else {
+      this.reflowContainer?.remove();
+      this.reflowContainer = null;
+      if (this.pageWrap) this.pageWrap.style.display = "";
+      await this.renderCurrent();
+    }
+  }
+
+  getViewMode(): "original" | "reflow" {
+    return this.viewMode;
+  }
+
+  private async renderReflow(): Promise<void> {
+    const result = await this.getReflow();
+    if (!result || !this.container) return;
+    if (this.pageWrap) this.pageWrap.style.display = "none";
+    this.reflowContainer?.remove();
+
+    const wrap = document.createElement("div");
+    wrap.className = "pdf-reflow";
+    if (this.typography) {
+      wrap.style.maxWidth = `${Math.round(this.typography.maxWidthCh * 0.53 * this.typography.fontSizePx)}px`;
+      wrap.style.fontFamily = stackFor(this.language);
+      wrap.style.fontSize = `${this.typography.fontSizePx}px`;
+      wrap.style.lineHeight = String(this.typography.lineHeight);
+    }
+    for (const block of result.blocks) {
+      const el = document.createElement(block.kind === "heading" ? "h2" : "p");
+      el.textContent = block.text;
+      el.dataset.pageIndex = String(block.pageIndex);
+      wrap.appendChild(el);
+    }
+    this.container.appendChild(wrap);
+    this.reflowContainer = wrap;
+
+    // report the current page as the reader scrolls (cross-view locator)
+    wrap.addEventListener("scroll", () => this.reportReflowPage(), { passive: true });
+    this.scrollReflowToPage();
+    this.reportReflowPage();
+  }
+
+  private scrollReflowToPage(): void {
+    const wrap = this.reflowContainer;
+    if (!wrap) return;
+    const target = wrap.querySelector<HTMLElement>(`[data-page-index="${this.pageIndex}"]`);
+    if (target) wrap.scrollTop = target.offsetTop - 16;
+  }
+
+  private reportReflowPage(): void {
+    const wrap = this.reflowContainer;
+    if (!wrap || !this.notify || !this.doc) return;
+    const blocks = Array.from(wrap.querySelectorAll<HTMLElement>("[data-page-index]"));
+    const top = wrap.scrollTop + 8;
+    let pageIndex = this.pageIndex;
+    for (const b of blocks) {
+      if (b.offsetTop <= top) pageIndex = Number(b.dataset.pageIndex);
+      else break;
+    }
+    this.pageIndex = pageIndex;
+    const label = this.label();
+    const envelope: LocatorEnvelope = {
+      v: 1,
+      engine: "pdf",
+      primary: { pageIndex, pageLabel: label, x: 0, y: 0 },
+      textQuote: null,
+      coarse: { sectionTitle: null, pageIndex, progress: (pageIndex + 1) / this.doc.numPages },
+    };
+    this.notify(envelope, { sectionTitle: `Page ${label} · Reflow`, pageIndex });
+  }
+
+  applyTypography(t: TypographySettings): void {
+    this.typography = t;
+    const wrap = this.reflowContainer;
+    if (wrap) {
+      wrap.style.maxWidth = `${Math.round(t.maxWidthCh * 0.53 * t.fontSizePx)}px`;
+      wrap.style.fontSize = `${t.fontSizePx}px`;
+      wrap.style.lineHeight = String(t.lineHeight);
+    }
+    // Original fixed layout ignores typography by design.
   }
 
   applyTheme(theme: ThemeName): void {
@@ -231,6 +342,8 @@ export class PdfEngine implements ReaderEngine {
     this.doc = null;
     this.pageWrap?.remove();
     this.pageWrap = null;
+    this.reflowContainer?.remove();
+    this.reflowContainer = null;
     this.canvas = null;
     this.textLayerDiv = null;
   }

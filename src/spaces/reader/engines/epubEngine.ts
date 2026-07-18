@@ -41,6 +41,66 @@ function buildTextQuote(range: Range, exact: string): TextQuote {
   };
 }
 
+const REMOTE_URL = /^\s*(https?:)?\/\//i;
+
+/**
+ * Strip active/remote content from a parsed chapter document IN PLACE, so
+ * hostile resources never start to load (ADR 0005). Runs in epub.js's
+ * `content` hook, before the iframe is written. Scripts are additionally
+ * dead via the sandbox; this removes them plus event handlers, javascript:
+ * URLs, and every absolute remote reference. Internal (relative/blob/data)
+ * resources are preserved. Returns the same root for convenience/testing.
+ */
+export function sanitizeDom<T extends Document | Element>(root: T): T {
+  const q = (sel: string): Element[] => Array.from(root.querySelectorAll(sel));
+
+  for (const el of q("script, iframe, object, embed, form, base, meta[http-equiv]")) {
+    el.remove();
+  }
+  for (const el of q("link")) {
+    if (REMOTE_URL.test(el.getAttribute("href") ?? "")) el.remove();
+  }
+  for (const el of q("style")) {
+    const css = el.textContent ?? "";
+    if (/@import/i.test(css) || /url\(\s*["']?\s*(https?:)?\/\//i.test(css)) {
+      el.textContent = css
+        .replace(/@import[^;]+;/gi, "/* remote import removed */")
+        .replace(/url\(\s*["']?\s*(https?:)?\/\/[^)]*\)/gi, "url()");
+    }
+  }
+  for (const el of q("*")) {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim();
+      if (name.startsWith("on") || /^javascript:/i.test(value)) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (
+        (name === "src" || name === "href" || name === "poster" || name === "srcset") &&
+        REMOTE_URL.test(value)
+      ) {
+        // external links keep their text but lose the live target; the
+        // shell offers explicit confirmation flows for real link-outs
+        if (name === "href") el.setAttribute("data-external-href", value);
+        el.removeAttribute(attr.name);
+      }
+    }
+    const style = el.getAttribute("style");
+    if (style && /url\(\s*["']?\s*(https?:)?\/\//i.test(style)) {
+      el.removeAttribute("style");
+    }
+  }
+  return root;
+}
+
+/** String-in/string-out wrapper (used by unit tests). */
+export function sanitizeChapter(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  sanitizeDom(doc);
+  return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
+}
+
 /**
  * epub.js behind the ReaderEngine seam (ADR 0002). Publication scripts are
  * disabled; chapters render inside epub.js's sandboxed iframes.
@@ -52,6 +112,7 @@ export class EpubEngine implements ReaderEngine {
   private typography: TypographySettings | null = null;
   private theme: ThemeName = "ember";
   private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
+  private footnoteHandler: ((note: { text: string; rect: DOMRect }) => void) | null = null;
   private appliedHighlights = new Map<string, string>(); // id -> cfi
   private container: HTMLElement | null = null;
 
@@ -60,6 +121,15 @@ export class EpubEngine implements ReaderEngine {
     this.language = args.book.language;
     this.book = ePub(bytes);
     const book = this.book;
+
+    // Sanitize each chapter's parsed DOM before epub.js serializes it into
+    // an iframe, so hostile remote resources never begin loading (ADR 0005).
+    const spineHooks = book.spine as unknown as {
+      hooks?: { content?: { register: (fn: (doc: Document) => void) => void } };
+    };
+    spineHooks.hooks?.content?.register((doc: Document) => {
+      sanitizeDom(doc);
+    });
 
     this.rendition = book.renderTo(args.container, {
       width: "100%",
@@ -115,6 +185,41 @@ export class EpubEngine implements ReaderEngine {
         const s = contents.window.getSelection();
         if ((!s || s.isCollapsed) && this.selectionHandler) this.selectionHandler(null);
       });
+
+      // Footnotes: noterefs open a small in-app popover and never navigate.
+      // External links require explicit confirmation (handled by the shell).
+      contents.document.addEventListener(
+        "click",
+        (e: MouseEvent) => {
+          const anchor = (e.target as Element | null)?.closest?.("a");
+          if (!anchor) return;
+          const epubType =
+            anchor.getAttribute("epub:type") ??
+            anchor.getAttributeNS?.("http://www.idpf.org/2007/ops", "type");
+          const href = anchor.getAttribute("href") ?? "";
+          if (epubType === "noteref" || href.startsWith("#")) {
+            const id = href.split("#")[1];
+            const target = id ? contents.document.getElementById(id) : null;
+            if (target && this.footnoteHandler) {
+              e.preventDefault();
+              e.stopPropagation();
+              const text = target.textContent?.trim() ?? "";
+              const iframe = this.container?.querySelector("iframe");
+              const frameRect = iframe?.getBoundingClientRect() ?? { left: 0, top: 0 };
+              const r = anchor.getBoundingClientRect();
+              this.footnoteHandler({
+                text,
+                rect: new DOMRect(r.x + frameRect.left, r.y + frameRect.top, r.width, r.height),
+              });
+            }
+          } else if (/^https?:/i.test(href)) {
+            // never navigate the reading surface to a remote origin
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        },
+        true,
+      );
     });
 
     this.applyTypography(args.typography);
@@ -283,6 +388,10 @@ export class EpubEngine implements ReaderEngine {
 
   onSelection(handler: (sel: EngineSelection | null) => void): void {
     this.selectionHandler = handler;
+  }
+
+  onFootnote(handler: (note: { text: string; rect: DOMRect }) => void): void {
+    this.footnoteHandler = handler;
   }
 
   setHighlights(annotations: EngineAnnotation[]): void {

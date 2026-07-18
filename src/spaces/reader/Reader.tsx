@@ -18,6 +18,8 @@ import type { EngineSelection, LocatorContext, ReaderEngine } from "./engines/ty
 import { SelectionToolbar } from "./SelectionToolbar";
 import { TocDrawer } from "./TocDrawer";
 import { SearchPanel } from "./SearchPanel";
+import { ForeEdge } from "./ForeEdge";
+import { define, type DefineResult } from "../../services/dictionary";
 import "./reader.css";
 
 const CHROME_FADE_MS = 2500;
@@ -64,6 +66,15 @@ export function Reader() {
   );
   const [studyPrompt, setStudyPrompt] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
+  const [footnote, setFootnote] = useState<{ text: string; rect: DOMRect } | null>(null);
+  const [pdfView, setPdfView] = useState<"original" | "reflow">("original");
+  const [reflowWarning, setReflowWarning] = useState<string | null>(null);
+  const [definePopover, setDefinePopover] = useState<{
+    result: DefineResult;
+    word: string;
+    rect: { x: number; y: number };
+  } | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ReaderEngine | null>(null);
@@ -102,6 +113,7 @@ export function Reader() {
       lastLocator.current = { locator, context };
       saveDirty.current = true;
       setSectionTitle(context.sectionTitle);
+      setProgress(typeof locator.coarse.progress === "number" ? locator.coarse.progress : null);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(flushSave, AUTOSAVE_DEBOUNCE_MS);
 
@@ -162,6 +174,7 @@ export function Reader() {
         engine.onSelection((sel) => {
           setSelection(sel);
         });
+        engine.onFootnote?.((note) => setFootnote(note));
         await engine.open({
           container,
           book: detail,
@@ -316,6 +329,25 @@ export function Reader() {
     },
     [refreshHighlights],
   );
+
+  const switchPdfView = useCallback((mode: "original" | "reflow") => {
+    const engine = engineRef.current;
+    if (!engine?.setViewMode) return;
+    void (async () => {
+      if (mode === "reflow" && engine.getReflow) {
+        const result = await engine.getReflow();
+        if (result?.textUnavailable) {
+          setReflowWarning("This PDF has no extractable text — Reflow isn't available.");
+          return;
+        }
+        setReflowWarning(result?.confidence === "low" ? result.reason : null);
+      } else {
+        setReflowWarning(null);
+      }
+      await engine.setViewMode?.(mode);
+      setPdfView(mode);
+    })();
+  }, []);
 
   // keyboard
   useEffect(() => {
@@ -482,10 +514,64 @@ export function Reader() {
           selection={selection}
           onHighlight={onHighlight}
           onNote={() => setNoteDraft({ selection, keep: false })}
+          onDefine={() => {
+            const word = selection.text.trim().split(/\s+/)[0] ?? "";
+            const rect = { x: selection.rect.x, y: selection.rect.y };
+            void define(word).then((result) => setDefinePopover({ result, word, rect }));
+          }}
           onKeep={() => setNoteDraft({ selection, keep: true })}
           onCopy={onCopy}
           onDismiss={() => setSelection(null)}
         />
+      )}
+
+      {footnote && (
+        <aside
+          className="footnote-popover"
+          role="dialog"
+          aria-label="Footnote"
+          style={{
+            top: Math.min(footnote.rect.y + 24, window.innerHeight - 180),
+            left: Math.min(Math.max(16, footnote.rect.x - 140), window.innerWidth - 360),
+          }}
+        >
+          <p>{footnote.text}</p>
+          <button onClick={() => setFootnote(null)} aria-label="Close footnote">
+            ×
+          </button>
+        </aside>
+      )}
+
+      {definePopover && (
+        <aside
+          className="footnote-popover define-popover"
+          role="dialog"
+          aria-label={`Definition of ${definePopover.word}`}
+          style={{
+            top: Math.min(definePopover.rect.y + 28, window.innerHeight - 180),
+            left: Math.min(Math.max(16, definePopover.rect.x - 140), window.innerWidth - 360),
+          }}
+        >
+          {definePopover.result.definition ? (
+            <>
+              <p className="define-word">
+                {definePopover.result.definition.word}
+                {definePopover.result.definition.pronunciation && (
+                  <span className="define-pron">
+                    {" "}
+                    {definePopover.result.definition.pronunciation}
+                  </span>
+                )}
+              </p>
+              <p>{definePopover.result.definition.sense}</p>
+            </>
+          ) : (
+            <p>{definePopover.result.message}</p>
+          )}
+          <button onClick={() => setDefinePopover(null)} aria-label="Close definition">
+            ×
+          </button>
+        </aside>
       )}
 
       {noteDraft && (
@@ -534,6 +620,10 @@ export function Reader() {
         />
       )}
 
+      {engineReady && engineRef.current && (
+        <ForeEdge engine={engineRef.current} progress={progress} onNavigate={goToTarget} />
+      )}
+
       {drawer === "toc" && engineReady && engineRef.current && (
         <TocDrawer
           engine={engineRef.current}
@@ -550,11 +640,22 @@ export function Reader() {
         />
       )}
 
+      {reflowWarning && (
+        <div className="reflow-warning" role="status">
+          <span>{reflowWarning}</span>
+          <button onClick={() => setReflowWarning(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
+
       {sheetOpen && book && (
         <AppearanceSheet
           theme={settings.theme}
           preset={settings.typographyPreset}
           mode={book.readingMode}
+          isPdf={book.readingFormat === "pdf"}
+          pdfView={pdfView}
           onTheme={(theme) => {
             applyTheme(theme);
             void updateSettings({ theme });
@@ -565,6 +666,7 @@ export function Reader() {
             setBook({ ...book, readingMode: mode });
             void ann.setReadingMode(book.id, mode);
           }}
+          onPdfView={switchPdfView}
           onClose={() => setSheetOpen(false)}
         />
       )}
@@ -649,17 +751,23 @@ function AppearanceSheet({
   theme,
   preset,
   mode,
+  isPdf,
+  pdfView,
   onTheme,
   onPreset,
   onMode,
+  onPdfView,
   onClose,
 }: {
   theme: ThemeName;
   preset: PresetName;
   mode: ReadingMode;
+  isPdf: boolean;
+  pdfView: "original" | "reflow";
   onTheme: (t: ThemeName) => void;
   onPreset: (p: PresetName) => void;
   onMode: (m: ReadingMode) => void;
+  onPdfView: (v: "original" | "reflow") => void;
   onClose: () => void;
 }) {
   return (
@@ -675,6 +783,25 @@ function AppearanceSheet({
           </button>
         </div>
       </div>
+      {isPdf && (
+        <div className="appearance-row" role="group" aria-label="PDF view">
+          <span>View</span>
+          <div>
+            <button
+              className={pdfView === "original" ? "is-active" : ""}
+              onClick={() => onPdfView("original")}
+            >
+              Original
+            </button>
+            <button
+              className={pdfView === "reflow" ? "is-active" : ""}
+              onClick={() => onPdfView("reflow")}
+            >
+              Reflow
+            </button>
+          </div>
+        </div>
+      )}
       <div className="appearance-row" role="group" aria-label="Typography preset">
         <span>Page</span>
         <div>
