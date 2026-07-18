@@ -59,7 +59,9 @@ Prerequisites: **Node.js LTS + pnpm**, **Rust (MSVC toolchain)**, and **WebView2
 
 ```sh
 pnpm install
-node scripts/copy-fonts.mjs          # bundle the offline reading fonts (one-time; outputs are gitignored)
+# The bundled reading fonts in public/fonts are committed; regenerate them
+# from the Fontsource packages only if you change the font set:
+#   node scripts/copy-fonts.mjs
 pnpm tauri dev                        # run the desktop app
 
 pnpm verify                           # typecheck + lint + format check + unit tests
