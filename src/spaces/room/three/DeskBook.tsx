@@ -1,14 +1,13 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import { useTexture } from "@react-three/drei";
 import type { BookSummary } from "../../../services/types";
 import { bookCoverUrl, inTauri } from "../../../services/library";
 import { hashString, MAT, spineColor } from "./materials";
 
 /**
- * The current book resting on the desk, cover-up. Uses the real cover
- * texture when available; otherwise a coherent spine color from title/author.
- * A generated spine is derived from the same palette.
+ * The current book resting on the desk, cover-up. The real cover texture is
+ * loaded imperatively and falls back to a coherent spine color if it cannot
+ * load — a cover failure must never throw (that would crash the R3F Canvas).
  */
 export function DeskBook({
   book,
@@ -19,10 +18,12 @@ export function DeskBook({
   position: [number, number, number];
   onOpen: () => void;
 }) {
-  const hasCover = inTauri() && Boolean(book.coverCachePath);
   const spine = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({ color: spineColor(hashString(book.title)), roughness: 0.7 }),
+      new THREE.MeshStandardMaterial({
+        color: spineColor(hashString(book.title)),
+        roughness: 0.7,
+      }),
     [book.title],
   );
 
@@ -41,14 +42,12 @@ export function DeskBook({
       <mesh castShadow receiveShadow material={MAT.pages}>
         <boxGeometry args={[1.35, 2.0, 0.26]} />
       </mesh>
-      {/* cover face slightly proud of the pages */}
-      {hasCover ? (
-        <CoverFace bookId={book.id} />
-      ) : (
-        <mesh position={[0, 0, 0.135]} material={spine}>
-          <boxGeometry args={[1.36, 2.01, 0.02]} />
-        </mesh>
-      )}
+      {/* cover face: real texture when it loads, spine color otherwise */}
+      <CoverFace
+        bookId={book.id}
+        hasCover={inTauri() && Boolean(book.coverCachePath)}
+        spine={spine}
+      />
       {/* spine strip */}
       <mesh position={[-0.68, 0, 0]} material={spine}>
         <boxGeometry args={[0.03, 2.0, 0.26]} />
@@ -57,13 +56,48 @@ export function DeskBook({
   );
 }
 
-function CoverFace({ bookId }: { bookId: string }) {
-  const texture = useTexture(bookCoverUrl(bookId));
-  texture.colorSpace = THREE.SRGBColorSpace;
+function CoverFace({
+  bookId,
+  hasCover,
+  spine,
+}: {
+  bookId: string;
+  hasCover: boolean;
+  spine: THREE.MeshStandardMaterial;
+}) {
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    if (!hasCover) return;
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      bookCoverUrl(bookId),
+      (tex) => {
+        if (cancelled) {
+          tex.dispose();
+          return;
+        }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        setTexture(tex);
+      },
+      undefined,
+      // onError: silently keep the spine-color fallback — never throw
+      () => {
+        if (!cancelled) setTexture(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId, hasCover]);
+
+  useEffect(() => () => texture?.dispose(), [texture]);
+
   return (
-    <mesh position={[0, 0, 0.135]}>
+    <mesh position={[0, 0, 0.135]} material={texture ? undefined : spine}>
       <boxGeometry args={[1.36, 2.01, 0.02]} />
-      <meshStandardMaterial map={texture} roughness={0.55} />
+      {texture && <meshStandardMaterial map={texture} roughness={0.55} />}
     </mesh>
   );
 }

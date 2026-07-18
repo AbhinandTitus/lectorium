@@ -19,9 +19,13 @@ pub fn handle(
     let app = ctx.app_handle();
     match serve(app, &request) {
         Ok(resp) => resp,
+        // Error responses still need CORS headers, or the WebView reports an
+        // opaque CORS failure instead of the real status (and image onerror
+        // never fires cleanly).
         Err(status) => Response::builder()
             .status(status)
             .header(header::CONTENT_TYPE, "text/plain")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
             .body(Vec::new())
             .unwrap_or_default(),
     }
@@ -102,7 +106,19 @@ fn serve(app: &AppHandle, request: &Request<Vec<u8>>) -> Result<Response<Vec<u8>
                 .app_cache_dir()
                 .map(|d| d.join("covers"))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let canonical = canonicalize_checked(&p, |c| starts_with_path(c, &covers_dir))?;
+            // The cover path comes from our own DB (not user input) and always
+            // points into a `.../<app-id>/covers/` directory. Accept it if it
+            // sits directly inside the current covers dir, OR — tolerating
+            // Windows packaged-path redirection where the cache dir resolves
+            // differently between runs — if its parent directory is literally
+            // named "covers". The `id` is already validated to contain no
+            // separators, so this cannot be used for traversal.
+            let canonical = canonicalize_checked(&p, |c| {
+                starts_with_path(c, &covers_dir)
+                    || c.parent()
+                        .and_then(|d| d.file_name())
+                        .is_some_and(|n| n == "covers")
+            })?;
             let ct = match canonical.extension().and_then(|e| e.to_str()) {
                 Some("png") => "image/png",
                 Some("gif") => "image/gif",

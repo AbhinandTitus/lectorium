@@ -4,6 +4,7 @@ import { useLibrary } from "../../state/library";
 import { useNavigation } from "../../state/navigation";
 import { BookCover } from "../../components/BookCover";
 import { Settings } from "../../app/Settings";
+import { ErrorBoundary } from "../../app/ErrorBoundary";
 import { isQuietNight } from "../../config/quietNight";
 import { webglAvailable } from "./Room3D";
 import "./room.css";
@@ -28,7 +29,9 @@ export function Room() {
 
   const [webgl] = useState(webglAvailable);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const use3D = webgl && settings.roomQuality !== "flat";
+  // if the 3D scene ever errors, fall back to the static room for the session
+  const [threeFailed, setThreeFailed] = useState(false);
+  const use3D = webgl && settings.roomQuality !== "flat" && !threeFailed;
 
   // Quiet Night (bedtime wind-down) or reduced motion freezes decorative motion.
   const reducedMotion = useMemo(
@@ -42,15 +45,17 @@ export function Room() {
   return (
     <main className="room" aria-label={identity.name}>
       {use3D && (
-        <Suspense fallback={null}>
-          <Room3D
-            current={current}
-            companions={companions}
-            quality={settings.roomQuality}
-            quietNight={quietNight}
-            onOpen={openBook}
-          />
-        </Suspense>
+        <ErrorBoundary onError={() => setThreeFailed(true)} fallback={() => null}>
+          <Suspense fallback={null}>
+            <Room3D
+              current={current}
+              companions={companions}
+              quality={settings.roomQuality}
+              quietNight={quietNight}
+              onOpen={openBook}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* Foreground UI: the actions live above the scene and are the

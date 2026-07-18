@@ -3,6 +3,7 @@ import { applyTheme } from "../config/tokens";
 import { inTauri } from "../services/library";
 import { useLibrary } from "../state/library";
 import { useNavigation } from "../state/navigation";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Onboarding } from "./Onboarding";
 import { Room } from "../spaces/room/Room";
 import { Reader } from "../spaces/reader/Reader";
@@ -12,6 +13,7 @@ import "./app.css";
 
 export function App() {
   const space = useNavigation((s) => s.space);
+  const goTo = useNavigation((s) => s.goTo);
   const { settings, bootstrap } = useLibrary();
   const [ready, setReady] = useState(false);
 
@@ -34,14 +36,30 @@ export function App() {
     return <Onboarding />;
   }
 
-  switch (space) {
-    case "room":
-      return <Room />;
-    case "reader":
-      return <Reader />;
-    case "stacks":
-      return <Stacks />;
-    case "commonplace":
-      return <Commonplace />;
-  }
+  // A crash in any one space must never blank the whole app; the boundary is
+  // keyed by space so navigating away clears a stuck error.
+  return (
+    <ErrorBoundary
+      key={space}
+      fallback={(retry) => (
+        <main className="space-placeholder" aria-label="Something went wrong">
+          <h1>Something went wrong on this screen.</h1>
+          <p>Your books and notes are safe. You can go back to the room and try again.</p>
+          <button
+            onClick={() => {
+              retry();
+              goTo("room");
+            }}
+          >
+            Back to the room
+          </button>
+        </main>
+      )}
+    >
+      {space === "room" && <Room />}
+      {space === "reader" && <Reader />}
+      {space === "stacks" && <Stacks />}
+      {space === "commonplace" && <Commonplace />}
+    </ErrorBoundary>
+  );
 }

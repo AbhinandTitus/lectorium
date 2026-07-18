@@ -2,6 +2,12 @@
 
 All notable changes to Lectorium, grouped by milestone. This project is pre-1.0; versions are milestone tags rather than semantic releases. Dates are the build dates on the development machine.
 
+## Fixes — 2026-07-19
+
+- **Critical: the app could blank to a white/empty screen.** The 3D room loaded the current book's cover as a WebGL texture via a call that *throws* when the cover can't load, and with no error boundary around the R3F Canvas that unmounted the entire app. Now the cover loads imperatively and falls back to the spine color on any failure, a top-level error boundary shows a calm "back to the room" screen instead of a blank one, and the 3D room falls back to the static room if it ever errors. Also: the `book://` protocol now returns CORS headers on error responses (so a failed cover is a clean error, not an opaque CORS failure) and the cover scope-check tolerates Windows packaged-path redirection.
+- **EPUB pagination on window resize.** epub.js paginates when a book opens but does not re-flow when the window resizes (maximize, snap, DPI change), which can leave columns mis-sized so content appears to scroll instead of flip. Added a resize observer that re-flows and re-anchors to the current location on any container size change.
+- **Live theme switching in the reader.** epub.js's theme API does not always re-inject into an already-rendered chapter, so switching Paper/Ember while reading could leave the previous page colors. The theme now also applies directly to the live chapter document.
+
 ## Fixes — 2026-07-18
 
 - **Mouse-wheel page turning.** The Reader had keyboard and click-zone turns but no wheel handler, and for EPUB the chapter iframe swallowed wheel events entirely. Added throttled wheel-to-flip (one gesture = one page) across all three engines: EPUB forwards wheel from inside the iframe; PDF and text flip via the reader stage. Disabled in PDF Reflow, which genuinely scrolls. Verified live: EPUB CFI and text pagination both advance/retreat on wheel, the throttle collapses a rapid double-wheel to one turn, and tiny deltas are ignored.

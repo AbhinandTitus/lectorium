@@ -116,6 +116,8 @@ export class EpubEngine implements ReaderEngine {
   private wheelHandler: ((deltaY: number) => void) | null = null;
   private appliedHighlights = new Map<string, string>(); // id -> cfi
   private container: HTMLElement | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeTimer: number | null = null;
 
   async open(args: EngineOpenArgs): Promise<void> {
     const bytes = await fetchBookBytes(args.fileUrl);
@@ -240,6 +242,30 @@ export class EpubEngine implements ReaderEngine {
     this.applyTypography(args.typography);
     this.applyTheme(args.theme);
 
+    // epub.js paginates on open but does not re-flow on container resize, so
+    // a maximize/resize can leave columns mis-sized (content appears to scroll
+    // instead of paginate). Re-flow on size change, preserving the location.
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+      this.resizeTimer = window.setTimeout(() => {
+        const loc = this.rendition?.currentLocation() as unknown as
+          { start?: { cfi: string } } | undefined;
+        const cfi = loc?.start?.cfi;
+        try {
+          const w = this.container?.clientWidth ?? 0;
+          const h = this.container?.clientHeight ?? 0;
+          if (w > 0 && h > 0) {
+            this.rendition?.resize(w, h);
+            // resize can drift the position; re-anchor to where we were
+            if (cfi) void this.rendition?.display(cfi);
+          }
+        } catch {
+          // never let a resize hiccup break reading
+        }
+      }, 180);
+    });
+    this.resizeObserver.observe(args.container);
+
     this.rendition.on("relocated", (location: RelocatedLocation) => {
       void (async () => {
         const sectionTitle = await this.sectionTitle(location.start.href);
@@ -344,9 +370,28 @@ export class EpubEngine implements ReaderEngine {
       },
     });
     this.rendition.themes.fontSize(`${t.fontSizePx}px`);
+
+    // epub.js's themes API does not reliably re-inject into a chapter that is
+    // already rendered, so a live theme switch can leave the previous page
+    // colors behind. Poke each live document directly (belt and suspenders).
+    try {
+      const contents = this.rendition.getContents() as unknown as Array<{ document: Document }>;
+      for (const c of Array.isArray(contents) ? contents : [contents]) {
+        const doc = c.document;
+        if (!doc?.documentElement) continue;
+        doc.documentElement.style.background = palette.page;
+        doc.body.style.background = palette.page;
+        doc.body.style.color = palette.textPrimary;
+      }
+    } catch {
+      // never let a styling poke break reading
+    }
   }
 
   destroy(): void {
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     try {
       this.rendition?.destroy();
       this.book?.destroy();
