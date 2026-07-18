@@ -1,7 +1,7 @@
 //! The typed IPC surface. Commands stay thin: validate, delegate, return.
 
 use crate::db::repo::{
-    self, BookDetail, BookQuery, BookSummary, DeskConflict, LibraryRoot, SavedLocation,
+    self, Annotation, BookDetail, BookQuery, BookSummary, DeskConflict, LibraryRoot, SavedLocation,
 };
 use crate::db::{schema_version, Db};
 use crate::error::AppError;
@@ -166,6 +166,41 @@ pub fn relink_book(db: State<'_, Db>, book_id: String, new_path: String) -> Resu
     }
     let conn = lock(&db)?;
     repo::relink_book(&conn, &book_id, &new_path)
+}
+
+#[tauri::command]
+pub fn add_annotation(db: State<'_, Db>, annotation: Annotation) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::add_annotation(&conn, &annotation)
+}
+
+#[tauri::command]
+pub fn list_annotations(db: State<'_, Db>, book_id: String) -> Result<Vec<Annotation>, AppError> {
+    let conn = lock(&db)?;
+    repo::list_annotations(&conn, &book_id)
+}
+
+#[tauri::command]
+pub fn update_annotation(
+    db: State<'_, Db>,
+    id: String,
+    note: Option<String>,
+    heading: Option<String>,
+) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::update_annotation_note(&conn, &id, note.as_deref(), heading.as_deref())
+}
+
+#[tauri::command]
+pub fn delete_annotation(db: State<'_, Db>, id: String) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::delete_annotation(&conn, &id)
+}
+
+#[tauri::command]
+pub fn set_reading_mode(db: State<'_, Db>, book_id: String, mode: String) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::set_reading_mode(&conn, &book_id, &mode)
 }
 
 #[derive(Serialize, Deserialize)]

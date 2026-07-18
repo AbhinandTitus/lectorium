@@ -328,6 +328,103 @@ pub fn relink_book(conn: &Connection, book_id: &str, new_path: &str) -> Result<(
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub id: String,
+    pub book_id: String,
+    pub kind: String,
+    pub start_locator_json: String,
+    pub end_locator_json: Option<String>,
+    pub exact_quote: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub note: Option<String>,
+    pub color_token: Option<String>,
+    pub commonplace_heading: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+pub fn add_annotation(conn: &Connection, a: &Annotation) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO annotations (id, book_id, kind, start_locator_json, end_locator_json,
+                                  exact_quote, prefix, suffix, note, color_token, commonplace_heading)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![
+            a.id,
+            a.book_id,
+            a.kind,
+            a.start_locator_json,
+            a.end_locator_json,
+            a.exact_quote,
+            a.prefix,
+            a.suffix,
+            a.note,
+            a.color_token,
+            a.commonplace_heading
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_annotations(conn: &Connection, book_id: &str) -> Result<Vec<Annotation>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, book_id, kind, start_locator_json, end_locator_json, exact_quote,
+                prefix, suffix, note, color_token, commonplace_heading, created_at
+         FROM annotations WHERE book_id = ?1 ORDER BY created_at",
+    )?;
+    let rows = stmt
+        .query_map([book_id], |r| {
+            Ok(Annotation {
+                id: r.get(0)?,
+                book_id: r.get(1)?,
+                kind: r.get(2)?,
+                start_locator_json: r.get(3)?,
+                end_locator_json: r.get(4)?,
+                exact_quote: r.get(5)?,
+                prefix: r.get(6)?,
+                suffix: r.get(7)?,
+                note: r.get(8)?,
+                color_token: r.get(9)?,
+                commonplace_heading: r.get(10)?,
+                created_at: r.get(11)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+pub fn update_annotation_note(
+    conn: &Connection,
+    id: &str,
+    note: Option<&str>,
+    heading: Option<&str>,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE annotations SET note = ?2, commonplace_heading = ?3,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+        params![id, note, heading],
+    )?;
+    Ok(())
+}
+
+pub fn delete_annotation(conn: &Connection, id: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM annotations WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn set_reading_mode(conn: &Connection, book_id: &str, mode: &str) -> Result<(), AppError> {
+    if !matches!(mode, "story" | "study" | "contemplative") {
+        return Err(AppError::Other("Unknown reading mode.".into()));
+    }
+    conn.execute(
+        "UPDATE books SET reading_mode = ?2 WHERE id = ?1",
+        params![book_id, mode],
+    )?;
+    Ok(())
+}
+
 /// The book whose reading location was most recently updated.
 pub fn most_recent_book_id(conn: &Connection) -> Result<Option<String>, AppError> {
     Ok(conn

@@ -3,7 +3,15 @@ import type { ThemeName } from "../../../config/tokens";
 import { stackFor, type TypographySettings } from "../../../config/typography";
 import { fetchBookText } from "../../../services/bookData";
 import type { LocatorEnvelope } from "../locator";
-import type { EngineOpenArgs, LocatorContext, ReaderEngine } from "./types";
+import type {
+  EngineAnnotation,
+  EngineOpenArgs,
+  EngineSelection,
+  LocatorContext,
+  ReaderEngine,
+  SearchHit,
+  TocEntry,
+} from "./types";
 
 /**
  * Reflowable text engine for TXT / Markdown / simple HTML. Content is
@@ -21,6 +29,8 @@ export class TextEngine implements ReaderEngine {
   private blocks: HTMLElement[] = [];
   private resizeObserver: ResizeObserver | null = null;
   private language: string | null = null;
+  private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
+  private selectionListener: (() => void) | null = null;
 
   async open(args: EngineOpenArgs): Promise<void> {
     this.container = args.container;
@@ -150,12 +160,146 @@ export class TextEngine implements ReaderEngine {
   }
 
   destroy(): void {
+    if (this.selectionListener) {
+      document.removeEventListener("selectionchange", this.selectionListener);
+    }
+    if ("highlights" in CSS) CSS.highlights.delete("lectorium-text");
     this.resizeObserver?.disconnect();
     this.page?.remove();
     this.page = null;
     this.flow = null;
     this.blocks = [];
   }
+
+  toc(): Promise<TocEntry[]> {
+    const out: TocEntry[] = [];
+    this.blocks.forEach((el, i) => {
+      const m = /^H([1-4])$/.exec(el.tagName);
+      if (m) {
+        out.push({
+          label: el.textContent?.trim() ?? "",
+          target: `block:${i}`,
+          depth: Number(m[1]) - 1,
+        });
+      }
+    });
+    return Promise.resolve(out);
+  }
+
+  goTo(target: string): Promise<void> {
+    const m = /^block:(\d+)$/.exec(target);
+    if (m) this.goToBlock(Number(m[1]));
+    return Promise.resolve();
+  }
+
+  search(query: string): Promise<SearchHit[]> {
+    const needle = query.trim().toLowerCase();
+    if (needle.length < 2) return Promise.resolve([]);
+    const hits: SearchHit[] = [];
+    for (let i = 0; i < this.blocks.length && hits.length < 200; i++) {
+      const text = this.blocks[i].textContent ?? "";
+      const at = text.toLowerCase().indexOf(needle);
+      if (at !== -1) {
+        const start = Math.max(0, at - 40);
+        hits.push({
+          target: `block:${i}`,
+          excerpt: `…${text.slice(start, at + needle.length + 40)}…`,
+          sectionTitle: this.nearestHeading(i),
+        });
+      }
+    }
+    return Promise.resolve(hits);
+  }
+
+  onSelection(handler: (sel: EngineSelection | null) => void): void {
+    this.selectionHandler = handler;
+    if (!this.selectionListener) {
+      this.selectionListener = () => this.emitSelection();
+      document.addEventListener("selectionchange", this.selectionListener);
+    }
+  }
+
+  private emitSelection(): void {
+    if (!this.selectionHandler || !this.flow) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !this.flow.contains(sel.anchorNode)) {
+      this.selectionHandler(null);
+      return;
+    }
+    const text = sel.toString();
+    if (!text.trim()) {
+      this.selectionHandler(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    let blockIndex = 0;
+    for (let i = 0; i < this.blocks.length; i++) {
+      if (this.blocks[i].contains(range.startContainer)) {
+        blockIndex = i;
+        break;
+      }
+    }
+    const envelope: LocatorEnvelope = {
+      v: 1,
+      engine: "text",
+      primary: { blockIndex, charOffset: 0 },
+      textQuote: { exact: text, prefix: "", suffix: "" },
+      coarse: { sectionTitle: this.nearestHeading(blockIndex), blockIndex },
+    };
+    this.selectionHandler({
+      text,
+      locator: envelope,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    });
+  }
+
+  setHighlights(annotations: EngineAnnotation[]): void {
+    if (!("highlights" in CSS) || !this.flow) return;
+    const ranges: Range[] = [];
+    for (const a of annotations) {
+      if (a.locator.engine !== "text") continue;
+      const exact = a.locator.textQuote?.exact;
+      if (!exact) continue;
+      const block = this.blocks[a.locator.primary.blockIndex];
+      const range = block ? findRangeIn(block, exact) : null;
+      if (range) ranges.push(range);
+    }
+    if (ranges.length > 0) {
+      CSS.highlights.set("lectorium-text", new Highlight(...ranges));
+    } else {
+      CSS.highlights.delete("lectorium-text");
+    }
+  }
+}
+
+/** Locate `exact` within one block element, spanning child text nodes. */
+function findRangeIn(root: HTMLElement, exact: string): Range | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let full = "";
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    nodes.push(t);
+    full += t.data;
+  }
+  const at = full.indexOf(exact);
+  if (at === -1) return null;
+  const locate = (offset: number): { node: Text; offset: number } | null => {
+    let acc = 0;
+    for (const node of nodes) {
+      if (offset <= acc + node.data.length) return { node, offset: offset - acc };
+      acc += node.data.length;
+    }
+    return null;
+  };
+  const start = locate(at);
+  const end = locate(at + exact.length);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return range;
 }
 
 function plainTextToHtml(raw: string): string {

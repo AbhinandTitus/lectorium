@@ -8,12 +8,16 @@ import {
   type TypographySettings,
 } from "../../config/typography";
 import * as lib from "../../services/library";
-import type { BookDetail } from "../../services/types";
+import * as ann from "../../services/annotations";
+import type { BookDetail, ReadingMode } from "../../services/types";
 import { useLibrary } from "../../state/library";
 import { useNavigation } from "../../state/navigation";
 import type { LocatorEnvelope } from "./locator";
 import { parseEnvelope, serializeEnvelope } from "./locator";
-import type { LocatorContext, ReaderEngine } from "./engines/types";
+import type { EngineSelection, LocatorContext, ReaderEngine } from "./engines/types";
+import { SelectionToolbar } from "./SelectionToolbar";
+import { TocDrawer } from "./TocDrawer";
+import { SearchPanel } from "./SearchPanel";
 import "./reader.css";
 
 const CHROME_FADE_MS = 2500;
@@ -39,6 +43,8 @@ async function makeEngine(format: string): Promise<ReaderEngine> {
   }
 }
 
+type Drawer = null | "toc" | "search";
+
 export function Reader() {
   const bookId = useNavigation((s) => s.openBookId);
   const closeBook = useNavigation((s) => s.closeBook);
@@ -48,15 +54,27 @@ export function Reader() {
   const [error, setError] = useState<string | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [drawer, setDrawer] = useState<Drawer>(null);
   const [ribbon, setRibbon] = useState<{ title: string; section: string | null } | null>(null);
   const [sectionTitle, setSectionTitle] = useState<string | null>(null);
   const [fontDelta, setFontDelta] = useState(0);
+  const [selection, setSelection] = useState<EngineSelection | null>(null);
+  const [noteDraft, setNoteDraft] = useState<{ selection: EngineSelection; keep: boolean } | null>(
+    null,
+  );
+  const [studyPrompt, setStudyPrompt] = useState<string | null>(null);
+  const [engineReady, setEngineReady] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ReaderEngine | null>(null);
   const saveTimer = useRef<number | null>(null);
-  const pendingSave = useRef<{ locator: LocatorEnvelope; context: LocatorContext } | null>(null);
+  /** most recent locator — survives flushes so bookmarks/prompts anchor */
+  const lastLocator = useRef<{ locator: LocatorEnvelope; context: LocatorContext } | null>(null);
+  const saveDirty = useRef(false);
   const chromeTimer = useRef<number | null>(null);
+  const annotationsRef = useRef<ann.Annotation[]>([]);
+  const lastSection = useRef<string | null>(null);
+  const modeRef = useRef<ReadingMode>("story");
 
   const typography: TypographySettings = useMemo(() => {
     const base = presets[settings.typographyPreset];
@@ -68,9 +86,9 @@ export function Reader() {
   }, [settings.typographyPreset, fontDelta]);
 
   const flushSave = useCallback(() => {
-    if (!pendingSave.current || !bookId) return;
-    const { locator, context } = pendingSave.current;
-    pendingSave.current = null;
+    if (!saveDirty.current || !lastLocator.current || !bookId) return;
+    saveDirty.current = false;
+    const { locator, context } = lastLocator.current;
     void lib.saveLocation(bookId, {
       engineType: locator.engine,
       locatorJson: serializeEnvelope(locator),
@@ -81,25 +99,57 @@ export function Reader() {
 
   const onLocatorChanged = useCallback(
     (locator: LocatorEnvelope, context: LocatorContext) => {
-      pendingSave.current = { locator, context };
+      lastLocator.current = { locator, context };
+      saveDirty.current = true;
       setSectionTitle(context.sectionTitle);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(flushSave, AUTOSAVE_DEBOUNCE_MS);
+
+      // Study mode: one quiet optional prompt at a section boundary.
+      const prev = lastSection.current;
+      lastSection.current = context.sectionTitle;
+      if (
+        modeRef.current === "study" &&
+        prev !== null &&
+        context.sectionTitle !== null &&
+        prev !== context.sectionTitle
+      ) {
+        setStudyPrompt(prev);
+      }
     },
     [flushSave],
   );
+
+  const refreshHighlights = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setHighlights(
+      annotationsRef.current
+        .filter((a) => a.kind === "highlight" || a.kind === "quote")
+        .map((a) => ({
+          id: a.id,
+          locator: parseEnvelope(a.startLocatorJson),
+          colorToken: a.colorToken ?? "selection",
+        }))
+        .filter((a): a is { id: string; locator: LocatorEnvelope; colorToken: string } =>
+          Boolean(a.locator),
+        ),
+    );
+  }, []);
 
   // open the book
   useEffect(() => {
     if (!bookId || !containerRef.current) return;
     let disposed = false;
     const container = containerRef.current;
+    setEngineReady(false);
 
     void (async () => {
       try {
         const detail = await lib.getBook(bookId);
         if (disposed) return;
         setBook(detail);
+        modeRef.current = detail.readingMode;
 
         const lastOpened = detail.lastOpenedAt ? Date.parse(detail.lastOpenedAt) : null;
         if (lastOpened && Date.now() - lastOpened > RIBBON_GAP_MS && detail.location) {
@@ -109,6 +159,9 @@ export function Reader() {
         const engine = await makeEngine(detail.readingFormat);
         if (disposed) return;
         engineRef.current = engine;
+        engine.onSelection((sel) => {
+          setSelection(sel);
+        });
         await engine.open({
           container,
           book: detail,
@@ -124,8 +177,11 @@ export function Reader() {
         const saved = detail.location ? parseEnvelope(detail.location.locatorJson) : null;
         await engine.display(saved);
         await lib.markOpened(detail.id);
+        annotationsRef.current = await ann.listAnnotations(detail.id);
+        refreshHighlights();
+        if (!disposed) setEngineReady(true);
       } catch (e) {
-        tracingError(e);
+        console.error("[reader]", e);
         if (!disposed) {
           setError("Lectorium could not read this file. Your original was not changed.");
         }
@@ -183,9 +239,82 @@ export function Reader() {
       dismissRibbon();
       const engine = engineRef.current;
       if (!engine) return;
-      void (dir === 1 ? engine.next() : engine.prev());
+      void (dir === 1 ? engine.next() : engine.prev()).then(refreshHighlights);
     },
-    [dismissRibbon],
+    [dismissRibbon, refreshHighlights],
+  );
+
+  // ---- annotation actions ----
+
+  const createAnnotation = useCallback(
+    async (
+      sel: EngineSelection,
+      kind: ann.AnnotationKind,
+      note: string | null,
+      heading: string | null,
+    ) => {
+      if (!bookId) return;
+      const record: ann.Annotation = {
+        id: crypto.randomUUID(),
+        bookId,
+        kind,
+        startLocatorJson: serializeEnvelope(sel.locator),
+        endLocatorJson: null,
+        exactQuote: sel.text,
+        prefix: sel.locator.textQuote?.prefix ?? null,
+        suffix: sel.locator.textQuote?.suffix ?? null,
+        note,
+        colorToken: "selection",
+        commonplaceHeading: heading,
+      };
+      await ann.addAnnotation(record);
+      annotationsRef.current = [...annotationsRef.current, record];
+      refreshHighlights();
+    },
+    [bookId, refreshHighlights],
+  );
+
+  const onHighlight = useCallback(() => {
+    if (selection) {
+      void createAnnotation(selection, "highlight", null, null);
+      setSelection(null);
+    }
+  }, [selection, createAnnotation]);
+
+  const onCopy = useCallback(() => {
+    if (selection) {
+      void navigator.clipboard.writeText(selection.text);
+      setSelection(null);
+    }
+  }, [selection]);
+
+  const addBookmark = useCallback(() => {
+    if (!bookId || !lastLocator.current) return;
+    const { locator, context } = lastLocator.current;
+    const record: ann.Annotation = {
+      id: crypto.randomUUID(),
+      bookId,
+      kind: "bookmark",
+      startLocatorJson: serializeEnvelope(locator),
+      endLocatorJson: null,
+      exactQuote: null,
+      prefix: null,
+      suffix: null,
+      note: context.sectionTitle,
+      colorToken: null,
+      commonplaceHeading: null,
+    };
+    void ann.addAnnotation(record).then(() => {
+      annotationsRef.current = [...annotationsRef.current, record];
+    });
+  }, [bookId]);
+
+  const goToTarget = useCallback(
+    (target: string) => {
+      setDrawer(null);
+      void engineRef.current?.goTo(target).then(refreshHighlights);
+    },
+    [refreshHighlights],
   );
 
   // keyboard
@@ -193,6 +322,11 @@ export function Reader() {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       wakeChrome();
+      if (e.ctrlKey && (e.key === "f" || e.key === "F")) {
+        setDrawer((d) => (d === "search" ? null : "search"));
+        e.preventDefault();
+        return;
+      }
       switch (e.key) {
         case "ArrowRight":
         case "PageDown":
@@ -216,12 +350,28 @@ export function Reader() {
         case "A":
           setSheetOpen((v) => !v);
           break;
+        case "t":
+        case "T":
+          setDrawer((d) => (d === "toc" ? null : "toc"));
+          break;
+        case "s":
+        case "S":
+          setDrawer((d) => (d === "search" ? null : "search"));
+          break;
+        case "b":
+        case "B":
+          addBookmark();
+          break;
+        case "n":
+        case "N":
+          if (selection) setNoteDraft({ selection, keep: false });
+          break;
         case "Escape":
-          if (sheetOpen) {
-            setSheetOpen(false);
-          } else if (document.fullscreenElement) {
-            void document.exitFullscreen();
-          }
+          if (noteDraft) setNoteDraft(null);
+          else if (drawer) setDrawer(null);
+          else if (sheetOpen) setSheetOpen(false);
+          else if (studyPrompt) setStudyPrompt(null);
+          else if (document.fullscreenElement) void document.exitFullscreen();
           // Esc never closes the book
           break;
         case "+":
@@ -247,7 +397,7 @@ export function Reader() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [turn, sheetOpen, wakeChrome]);
+  }, [turn, sheetOpen, drawer, noteDraft, studyPrompt, selection, wakeChrome, addBookmark]);
 
   if (!bookId) {
     return (
@@ -278,6 +428,8 @@ export function Reader() {
           {book?.title}
           {sectionTitle ? ` — ${sectionTitle}` : ""}
         </span>
+        <button onClick={() => setDrawer((d) => (d === "toc" ? null : "toc"))}>Contents</button>
+        <button onClick={() => setDrawer((d) => (d === "search" ? null : "search"))}>Search</button>
         <button onClick={() => setSheetOpen((v) => !v)} aria-label="Appearance">
           Aa
         </button>
@@ -325,15 +477,94 @@ export function Reader() {
         </aside>
       )}
 
-      {sheetOpen && (
+      {selection && !noteDraft && (
+        <SelectionToolbar
+          selection={selection}
+          onHighlight={onHighlight}
+          onNote={() => setNoteDraft({ selection, keep: false })}
+          onKeep={() => setNoteDraft({ selection, keep: true })}
+          onCopy={onCopy}
+          onDismiss={() => setSelection(null)}
+        />
+      )}
+
+      {noteDraft && (
+        <NoteSheet
+          keep={noteDraft.keep}
+          quote={noteDraft.selection.text}
+          onSave={(note, heading) => {
+            void createAnnotation(
+              noteDraft.selection,
+              noteDraft.keep ? "quote" : "note",
+              note || null,
+              heading || null,
+            );
+            setNoteDraft(null);
+            setSelection(null);
+          }}
+          onCancel={() => setNoteDraft(null)}
+        />
+      )}
+
+      {studyPrompt && (
+        <StudyPrompt
+          section={studyPrompt}
+          onSave={(text) => {
+            if (bookId && text.trim() && lastLocator.current) {
+              const record: ann.Annotation = {
+                id: crypto.randomUUID(),
+                bookId,
+                kind: "idea",
+                startLocatorJson: serializeEnvelope(lastLocator.current.locator),
+                endLocatorJson: null,
+                exactQuote: null,
+                prefix: null,
+                suffix: null,
+                note: text.trim(),
+                colorToken: null,
+                commonplaceHeading: studyPrompt,
+              };
+              void ann.addAnnotation(record).then(() => {
+                annotationsRef.current = [...annotationsRef.current, record];
+              });
+            }
+            setStudyPrompt(null);
+          }}
+          onDismiss={() => setStudyPrompt(null)}
+        />
+      )}
+
+      {drawer === "toc" && engineReady && engineRef.current && (
+        <TocDrawer
+          engine={engineRef.current}
+          currentSection={sectionTitle}
+          onNavigate={goToTarget}
+          onClose={() => setDrawer(null)}
+        />
+      )}
+      {drawer === "search" && engineReady && engineRef.current && (
+        <SearchPanel
+          engine={engineRef.current}
+          onNavigate={goToTarget}
+          onClose={() => setDrawer(null)}
+        />
+      )}
+
+      {sheetOpen && book && (
         <AppearanceSheet
           theme={settings.theme}
           preset={settings.typographyPreset}
+          mode={book.readingMode}
           onTheme={(theme) => {
             applyTheme(theme);
             void updateSettings({ theme });
           }}
           onPreset={(typographyPreset) => void updateSettings({ typographyPreset })}
+          onMode={(mode) => {
+            modeRef.current = mode;
+            setBook({ ...book, readingMode: mode });
+            void ann.setReadingMode(book.id, mode);
+          }}
           onClose={() => setSheetOpen(false)}
         />
       )}
@@ -341,17 +572,94 @@ export function Reader() {
   );
 }
 
+function NoteSheet({
+  keep,
+  quote,
+  onSave,
+  onCancel,
+}: {
+  keep: boolean;
+  quote: string;
+  onSave: (note: string, heading: string) => void;
+  onCancel: () => void;
+}) {
+  const [note, setNote] = useState("");
+  const [heading, setHeading] = useState("");
+  return (
+    <aside className="note-sheet" role="dialog" aria-label={keep ? "Keep to Commonplace" : "Note"}>
+      <blockquote>{quote.length > 240 ? quote.slice(0, 240) + "…" : quote}</blockquote>
+      <textarea
+        autoFocus
+        placeholder={keep ? "Why keep this? (optional)" : "Your note (optional)"}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={3}
+      />
+      {keep && (
+        <input
+          type="text"
+          placeholder="Heading — e.g. courage, craft, history (optional)"
+          value={heading}
+          onChange={(e) => setHeading(e.target.value)}
+          aria-label="Commonplace heading"
+        />
+      )}
+      <div className="note-sheet-actions">
+        <button className="note-sheet-save" onClick={() => onSave(note, heading)}>
+          {keep ? "Keep" : "Save note"}
+        </button>
+        <button onClick={onCancel}>Cancel</button>
+      </div>
+    </aside>
+  );
+}
+
+/** One quiet optional field at a chapter boundary. Skippable, unscored. */
+function StudyPrompt({
+  section,
+  onSave,
+  onDismiss,
+}: {
+  section: string;
+  onSave: (text: string) => void;
+  onDismiss: () => void;
+}) {
+  const [text, setText] = useState("");
+  return (
+    <aside className="study-prompt" role="dialog" aria-label="Reflection">
+      <p className="study-prompt-section">{section}</p>
+      <input
+        type="text"
+        placeholder="What stayed with you? (optional)"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onSave(text);
+        }}
+      />
+      <div className="note-sheet-actions">
+        <button onClick={() => onSave(text)}>Keep</button>
+        <button onClick={onDismiss}>Not now</button>
+      </div>
+    </aside>
+  );
+}
+
 function AppearanceSheet({
   theme,
   preset,
+  mode,
   onTheme,
   onPreset,
+  onMode,
   onClose,
 }: {
   theme: ThemeName;
   preset: PresetName;
+  mode: ReadingMode;
   onTheme: (t: ThemeName) => void;
   onPreset: (p: PresetName) => void;
+  onMode: (m: ReadingMode) => void;
   onClose: () => void;
 }) {
   return (
@@ -381,7 +689,19 @@ function AppearanceSheet({
           ))}
         </div>
       </div>
-      <p className="appearance-hint">Ctrl + / Ctrl − adjust text size · Esc closes</p>
+      <div className="appearance-row" role="group" aria-label="Reading mode">
+        <span>Mode</span>
+        <div>
+          {(["story", "study", "contemplative"] as ReadingMode[]).map((m) => (
+            <button key={m} className={mode === m ? "is-active" : ""} onClick={() => onMode(m)}>
+              {m[0].toUpperCase() + m.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="appearance-hint">
+        T contents · Ctrl+F search · B bookmark · Ctrl± text size · Esc closes
+      </p>
       <button className="appearance-close" onClick={onClose} aria-label="Close appearance">
         ×
       </button>
@@ -395,8 +715,4 @@ async function toggleFullscreen(): Promise<void> {
   } else {
     await document.documentElement.requestFullscreen();
   }
-}
-
-function tracingError(e: unknown): void {
-  console.error("[reader]", e);
 }

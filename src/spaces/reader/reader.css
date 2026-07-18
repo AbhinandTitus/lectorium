@@ -80,9 +80,44 @@
   opacity: 0;
 }
 
+.pdf-page-wrap {
+  position: relative;
+}
+
 .pdf-page-canvas {
+  display: block;
   border-radius: 2px;
   box-shadow: 0 2px 14px rgb(0 0 0 / 30%);
+}
+
+/* PDF.js text layer: transparent selectable text over the canvas */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  transform-origin: 0 0;
+  forced-color-adjust: none;
+  caret-color: transparent;
+}
+
+.pdf-text-layer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-text-layer ::selection {
+  background: var(--color-selection);
+  color: transparent;
+}
+
+::highlight(lectorium-pdf),
+::highlight(lectorium-text) {
+  background-color: var(--color-selection);
+  color: inherit;
 }
 
 .text-engine-page {
@@ -263,4 +298,181 @@
   top: 0.5rem;
   right: 0.7rem;
   color: var(--color-text-secondary);
+}
+
+/* ---------- selection toolbar ---------- */
+
+.selection-toolbar {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.25rem;
+  background: var(--color-raised);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+.selection-toolbar button {
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-small);
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+}
+
+.selection-toolbar button:hover {
+  background: var(--color-page);
+  color: var(--color-accent);
+}
+
+/* ---------- side drawers (contents, search) ---------- */
+
+.reader-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 16;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-raised);
+  border-left: 1px solid var(--color-hairline);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 25%);
+}
+
+.reader-drawer header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.reader-drawer header h2 {
+  flex: 1;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.reader-drawer header input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  background: var(--color-page);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.reader-drawer header button {
+  color: var(--color-text-secondary);
+  font-size: 1.1rem;
+}
+
+.reader-drawer-note {
+  padding: 0.8rem 1rem;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.toc-list,
+.search-hits {
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  padding: 0.4rem 0;
+}
+
+.toc-list button,
+.search-hits button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 1rem;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.toc-list button:hover,
+.search-hits button:hover {
+  background: var(--color-page);
+}
+
+.toc-list button.is-current {
+  color: var(--color-accent);
+}
+
+.search-hit-excerpt {
+  display: block;
+}
+
+.search-hit-section {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  margin-top: 0.15rem;
+}
+
+/* ---------- note sheet + study prompt ---------- */
+
+.note-sheet,
+.study-prompt {
+  position: absolute;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 22;
+  width: min(520px, calc(100% - 3rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1.1rem 1.3rem;
+  background: var(--color-raised);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-large);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 40%);
+}
+
+.note-sheet blockquote {
+  border-left: 2px solid var(--color-accent);
+  padding-left: 0.8rem;
+  color: var(--color-text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.note-sheet textarea,
+.note-sheet input,
+.study-prompt input {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  background: var(--color-page);
+  color: var(--color-text-primary);
+  font: inherit;
+  resize: vertical;
+}
+
+.note-sheet-actions {
+  display: flex;
+  gap: 1rem;
+}
+
+.note-sheet-actions button {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.note-sheet-actions .note-sheet-save,
+.note-sheet-actions button:first-child {
+  color: var(--color-accent);
+}
+
+.study-prompt-section {
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
 }
