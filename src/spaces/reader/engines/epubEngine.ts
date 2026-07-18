@@ -41,6 +41,34 @@ function buildTextQuote(range: Range, exact: string): TextQuote {
   };
 }
 
+/**
+ * Resolve once the element has a non-zero layout size (or a timeout), so
+ * epub.js never renders into a 0-height box and fall back to scrolled flow.
+ */
+function waitForSize(
+  el: HTMLElement,
+  timeoutMs = 2000,
+): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const read = () => ({ width: el.clientWidth, height: el.clientHeight });
+    const initial = read();
+    if (initial.width > 0 && initial.height > 0) {
+      resolve(initial);
+      return;
+    }
+    const start = performance.now();
+    const tick = () => {
+      const s = read();
+      if ((s.width > 0 && s.height > 0) || performance.now() - start > timeoutMs) {
+        resolve(s.width > 0 && s.height > 0 ? s : { width: 800, height: 600 });
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
 const REMOTE_URL = /^\s*(https?:)?\/\//i;
 
 /**
@@ -134,9 +162,15 @@ export class EpubEngine implements ReaderEngine {
       sanitizeDom(doc);
     });
 
+    // epub.js can only paginate if the container has a real height when it
+    // renders. If we render before layout settles (more likely on large/
+    // high-DPI windows), it falls back to a vertical scroll — the reported
+    // "scrolls down instead of flipping". Wait for a non-zero size, then hand
+    // epub.js explicit pixel dimensions so paginated flow is unambiguous.
+    const size = await waitForSize(args.container);
     this.rendition = book.renderTo(args.container, {
-      width: "100%",
-      height: "100%",
+      width: size.width,
+      height: size.height,
       flow: "paginated",
       spread: "none",
       allowScriptedContent: false,
@@ -242,6 +276,11 @@ export class EpubEngine implements ReaderEngine {
     this.applyTypography(args.typography);
     this.applyTheme(args.theme);
 
+    // Every time epub.js renders a chapter (open, navigation, resize) it can
+    // reset styles to the publication default, so re-apply our theme after
+    // each render — this keeps Ember dark no matter what triggers a re-render.
+    this.rendition.on("rendered", () => this.injectContentStyles());
+
     // epub.js paginates on open but does not re-flow on container resize, so
     // a maximize/resize can leave columns mis-sized (content appears to scroll
     // instead of paginate). Re-flow on size change, preserving the location.
@@ -258,6 +297,7 @@ export class EpubEngine implements ReaderEngine {
             this.rendition?.resize(w, h);
             // resize can drift the position; re-anchor to where we were
             if (cfi) void this.rendition?.display(cfi);
+            this.injectContentStyles();
           }
         } catch {
           // never let a resize hiccup break reading
@@ -346,6 +386,16 @@ export class EpubEngine implements ReaderEngine {
         ? stackFor(this.language)
         : t.fontFamily;
     this.rendition.themes.default({
+      // Paint the page color on the root and body, and force EVERY element's
+      // background transparent so a publisher/Calibre wrapper (which often sets
+      // a light background of its own) can never cover the theme — this is what
+      // made Ember show a white page on some displays.
+      "*": {
+        "background-color": "transparent !important",
+      },
+      html: {
+        background: `${palette.page} !important`,
+      },
       body: {
         "font-family": `${family} !important`,
         "font-size": `${t.fontSizePx}px !important`,
@@ -373,8 +423,11 @@ export class EpubEngine implements ReaderEngine {
 
     // epub.js's themes API does not reliably re-inject into a chapter that is
     // already rendered, so a live theme switch can leave the previous page
-    // colors behind. Poke each live document directly (belt and suspenders).
+    // colors behind. Poke each live document (and the iframe element itself)
+    // directly — belt and suspenders so no white can ever show through.
     try {
+      const iframe = this.container?.querySelector("iframe");
+      if (iframe) iframe.style.background = palette.page;
       const contents = this.rendition.getContents() as unknown as Array<{ document: Document }>;
       for (const c of Array.isArray(contents) ? contents : [contents]) {
         const doc = c.document;
