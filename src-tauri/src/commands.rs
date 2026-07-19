@@ -162,11 +162,52 @@ pub fn mark_opened(db: State<'_, Db>, book_id: String) -> Result<(), AppError> {
 /// Point a missing book at a file the user found again.
 #[tauri::command]
 pub fn relink_book(db: State<'_, Db>, book_id: String, new_path: String) -> Result<(), AppError> {
-    if !Path::new(&new_path).is_file() {
-        return Err(AppError::Other("That file could not be opened.".into()));
+    let canonical = std::fs::canonicalize(&new_path)
+        .map_err(|_| AppError::Other("That file could not be opened.".into()))?;
+    if !canonical.is_file() {
+        return Err(AppError::Other("That is not a readable book file.".into()));
     }
     let conn = lock(&db)?;
-    repo::relink_book(&conn, &book_id, &new_path)
+    let within_root = repo::list_roots(&conn)?
+        .iter()
+        .any(|root| canonical.starts_with(Path::new(&root.canonical_path)));
+    if !within_root {
+        return Err(AppError::Other(
+            "Choose a file inside one of your library folders.".into(),
+        ));
+    }
+    let identity = repo::relink_identity(&conn, &book_id)?;
+    let source_format = canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(crate::library::classify)
+        .map(|(source, _)| source)
+        .ok_or_else(|| AppError::Other("That file format cannot be opened by Lectorium.".into()))?;
+    if source_format != identity.source_format {
+        return Err(AppError::Other(
+            "Choose the same file format as the missing book.".into(),
+        ));
+    }
+    let hash = scanner::hash_file(&canonical)
+        .map_err(|_| AppError::Other("Lectorium could not verify that file.".into()))?;
+    if identity
+        .content_hash
+        .as_deref()
+        .is_some_and(|expected| expected != hash)
+    {
+        return Err(AppError::Other(
+            "That file is different from the missing book.".into(),
+        ));
+    }
+    let metadata = std::fs::metadata(&canonical)?;
+    let fingerprint = scanner::quick_fingerprint(&metadata);
+    repo::relink_book(
+        &conn,
+        &book_id,
+        &canonical.to_string_lossy(),
+        &fingerprint,
+        &hash,
+    )
 }
 
 #[tauri::command]
@@ -271,23 +312,53 @@ pub fn export_commonplace(db: State<'_, Db>, dir: String) -> Result<String, AppE
         let conn = lock(&db)?;
         repo::export_data(&conn)?
     };
-    let root = std::path::Path::new(&dir);
+    let root = std::fs::canonicalize(&dir)
+        .map_err(|_| AppError::Other("That export folder could not be opened.".into()))?;
     if !root.is_dir() {
         return Err(AppError::Other("That is not a folder.".into()));
     }
     let out = root.join("lectorium-commonplace");
+    if std::fs::symlink_metadata(&out)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(AppError::Other(
+            "The export folder is a symbolic link and cannot be used safely.".into(),
+        ));
+    }
     std::fs::create_dir_all(&out)?;
+    let out = std::fs::canonicalize(&out)?;
+    if out.parent() != Some(root.as_path()) {
+        return Err(AppError::Other(
+            "The export folder could not be verified.".into(),
+        ));
+    }
 
     // JSON (machine-readable, includes source locators)
     let json = serde_json::to_string_pretty(&bundle)
         .map_err(|e| AppError::Other(format!("Could not serialize export: {e}")))?;
-    std::fs::write(out.join("commonplace.json"), json)?;
+    write_export_file(&out, "commonplace.json", json.as_bytes())?;
 
     // Markdown, grouped by heading (the reader's "commonplaces")
-    std::fs::write(out.join("commonplace.md"), render_markdown(&bundle))?;
+    let markdown = render_markdown(&bundle);
+    write_export_file(&out, "commonplace.md", markdown.as_bytes())?;
 
     tracing::info!(?out, "exported commonplace");
     Ok(out.to_string_lossy().into_owned())
+}
+
+fn write_export_file(dir: &Path, name: &str, contents: &[u8]) -> Result<(), AppError> {
+    let path = dir.join(name);
+    if std::fs::symlink_metadata(&path)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(AppError::Other(
+            "An existing export file is a symbolic link and was not overwritten.".into(),
+        ));
+    }
+    std::fs::write(path, contents)?;
+    Ok(())
 }
 
 fn render_markdown(bundle: &repo::ExportBundle) -> String {
@@ -377,16 +448,23 @@ pub fn list_backups(app: AppHandle) -> Result<Vec<crate::db::BackupInfo>, AppErr
 
 #[tauri::command]
 pub fn restore_backup(app: AppHandle, db: State<'_, Db>, path: String) -> Result<(), AppError> {
-    if !Path::new(&path).is_file() {
-        return Err(AppError::Other(
-            "That backup file could not be found.".into(),
-        ));
-    }
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|_| AppError::Other("Could not find the app data folder.".into()))?;
-    crate::db::restore_from(&db, &data_dir, Path::new(&path))
+    let candidate = std::fs::canonicalize(&path)
+        .map_err(|_| AppError::Other("That backup file could not be found.".into()))?;
+    let backup_dir = std::fs::canonicalize(data_dir.join("backups"))
+        .map_err(|_| AppError::Other("No backup folder is available yet.".into()))?;
+    if !candidate.is_file()
+        || candidate.parent() != Some(backup_dir.as_path())
+        || candidate.extension().and_then(|ext| ext.to_str()) != Some("db")
+    {
+        return Err(AppError::Other(
+            "Choose a backup created by Lectorium.".into(),
+        ));
+    }
+    crate::db::restore_from(&db, &data_dir, &candidate)
 }
 
 /// Import a previously exported `commonplace.json`. Rust reads the chosen
@@ -396,15 +474,21 @@ pub fn import_reading_data(
     db: State<'_, Db>,
     path: String,
 ) -> Result<repo::ImportReport, AppError> {
-    let p = Path::new(&path);
-    if !p.is_file() {
+    let p = std::fs::canonicalize(&path)
+        .map_err(|_| AppError::Other("That file could not be opened.".into()))?;
+    if !p.is_file()
+        || !p
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
         return Err(AppError::Other("That file could not be opened.".into()));
     }
-    let json = std::fs::read_to_string(p)
-        .map_err(|_| AppError::Other("Lectorium could not read that file.".into()))?;
-    if json.len() > 32 * 1024 * 1024 {
+    if std::fs::metadata(&p)?.len() > 32 * 1024 * 1024 {
         return Err(AppError::Other("That file is too large to import.".into()));
     }
+    let json = std::fs::read_to_string(&p)
+        .map_err(|_| AppError::Other("Lectorium could not read that file.".into()))?;
     let conn = lock(&db)?;
     repo::import_bundle(&conn, &json)
 }

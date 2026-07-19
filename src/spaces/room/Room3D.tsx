@@ -5,19 +5,6 @@ import type { RoomQuality } from "../../services/library";
 import { RoomScene } from "./three/RoomScene";
 import "./room3d.css";
 
-/** WebGL availability probe — a single context creation attempt. */
-export function webglAvailable(): boolean {
-  try {
-    const canvas = document.createElement("canvas");
-    return Boolean(
-      window.WebGLRenderingContext &&
-      (canvas.getContext("webgl") || canvas.getContext("experimental-webgl")),
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The 3D Reading Room canvas. Demand-driven rendering (only repaints on
  * interaction/hover/invalidate), paused when the window loses focus, and

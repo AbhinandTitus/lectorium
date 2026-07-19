@@ -13,7 +13,7 @@ export function Recall({
   onOpenBook,
 }: {
   onExit: () => void;
-  onOpenBook: (bookId: string) => void;
+  onOpenBook: (bookId: string, locatorJson?: string | null) => void;
 }) {
   const [items, setItems] = useState<cp.RecallItem[] | null>(null);
   const [index, setIndex] = useState(0);
@@ -94,7 +94,10 @@ export function Recall({
               <blockquote className="recall-passage">{current!.exactQuote}</blockquote>
             )}
             {current!.note && <p className="recall-note">{current!.note}</p>}
-            <button className="recall-source" onClick={() => onOpenBook(current!.bookId)}>
+            <button
+              className="recall-source"
+              onClick={() => onOpenBook(current!.bookId, current!.startLocatorJson)}
+            >
               {current!.bookTitle}
             </button>
             <div className="recall-actions">

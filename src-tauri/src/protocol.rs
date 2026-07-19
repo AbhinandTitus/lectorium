@@ -4,7 +4,7 @@
 //! library roots (or the app cover cache) before a single byte is served.
 //! Range requests are honored so large PDFs stream instead of loading whole.
 
-use crate::db::Db;
+use crate::db::{repo, Db};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tauri::http::{header, Request, Response, StatusCode};
@@ -61,29 +61,15 @@ fn serve(app: &AppHandle, request: &Request<Vec<u8>>) -> Result<Response<Vec<u8>
                 .conn
                 .lock()
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let (p, fmt): (String, String) = conn
-                .query_row(
-                    "SELECT canonical_path, source_format FROM books WHERE id = ?1",
-                    [id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(|_| StatusCode::NOT_FOUND)?;
-            let roots: Vec<String> = {
-                let mut stmt = conn
-                    .prepare("SELECT canonical_path FROM library_roots")
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let collected: Vec<String> = stmt
-                    .query_map([], |r| r.get(0))
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                collected
-            };
+            let (p, fmt) = repo::protocol_book_source(&conn, id)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let roots = repo::list_roots(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             drop(conn);
             let canonical = canonicalize_checked(&p, |c| {
                 roots
                     .iter()
-                    .any(|root| starts_with_path(c, Path::new(root)))
+                    .any(|root| starts_with_path(c, Path::new(&root.canonical_path)))
             })?;
             (canonical, content_type_for(&fmt))
         }
@@ -92,13 +78,8 @@ fn serve(app: &AppHandle, request: &Request<Vec<u8>>) -> Result<Response<Vec<u8>
                 .conn
                 .lock()
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let p: Option<String> = conn
-                .query_row(
-                    "SELECT cover_cache_path FROM books WHERE id = ?1",
-                    [id],
-                    |r| r.get(0),
-                )
-                .map_err(|_| StatusCode::NOT_FOUND)?;
+            let p = repo::protocol_cover_path(&conn, id)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             drop(conn);
             let p = p.ok_or(StatusCode::NOT_FOUND)?;
             let covers_dir = app

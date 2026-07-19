@@ -126,6 +126,8 @@ export interface StoredSettings {
   bedtime: string | null;
   /** "HH:MM" one daily reminder cue; null = off */
   reminderTime: string | null;
+  /** preserve publisher CSS in EPUBs while using the Paper theme */
+  epubPublisherStyles: boolean;
 }
 
 export const defaultSettings: StoredSettings = {
@@ -139,6 +141,7 @@ export const defaultSettings: StoredSettings = {
   roomQuality: "high",
   bedtime: null,
   reminderTime: null,
+  epubPublisherStyles: false,
 };
 
 export async function loadSettings(): Promise<StoredSettings> {

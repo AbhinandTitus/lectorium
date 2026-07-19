@@ -14,7 +14,7 @@ Out of scope: DRM circumvention (refused), OS-level compromise, physical access.
 
 1. **Filesystem**: only user-granted roots + app cache are readable. Every Rust command canonicalizes and scope-checks paths. Archive entries are extracted with traversal guards. Original files are never modified or deleted.
 2. **Content isolation**: publication scripts never execute; chapters render sandboxed and sanitized; remote resources blocked by default (per-book opt-in, disclosed); PDF scripting disabled.
-3. **Network**: zero network calls exist in the product except the opt-in dictionary adapter. No telemetry, analytics, update pings, or crash upload. CSP allows no remote origin.
+3. **Network**: zero remote network calls exist in the product. The offline dictionary fetches only same-origin files bundled under `/dict/`; a future online adapter remains the sole sanctioned remote seam and must be explicitly enabled. No telemetry, analytics, update pings, or crash upload. CSP allows no remote origin.
 4. **Links**: external URLs open only after explicit confirmation, in the system browser.
 5. **Paths in UI**: rendered as text nodes only, never as HTML.
 6. **Calibre adapter**: explicit user action, known-location executable, structured-argument process spawn (no shell string), DRM-free inputs only, source preserved.

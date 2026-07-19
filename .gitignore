@@ -13,6 +13,9 @@ dist-ssr
 *.local
 src-tauri/target
 
+# Local reading/test corpus; never publish user-supplied books.
+/books/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

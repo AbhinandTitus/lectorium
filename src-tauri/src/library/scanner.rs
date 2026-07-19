@@ -11,7 +11,7 @@
 //! Originals are never modified, moved, or deleted. Missing files keep all
 //! user data and are marked `missing_since` only.
 
-use crate::db::Db;
+use crate::db::{repo, Db};
 use crate::library::{classify, epub_meta};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -149,95 +149,92 @@ pub fn run_scan(
         let fingerprint = quick_fingerprint(&md);
         let path_str = path.to_string_lossy().to_string();
 
-        {
+        let changed_id = {
             let conn = db.conn.lock().expect("db lock");
-            let existing: Option<(String, Option<String>)> = conn
-                .query_row(
-                    "SELECT id, quick_fingerprint FROM books WHERE canonical_path = ?1",
-                    [&path_str],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
+            let existing = repo::scan_existing_by_path(&conn, &path_str)?;
 
             match existing {
                 Some((id, Some(fp))) if fp == fingerprint => {
                     // Unchanged; clear a stale missing flag if the file is back.
-                    conn.execute(
-                        "UPDATE books SET missing_since = NULL WHERE id = ?1 AND missing_since IS NOT NULL",
-                        [&id],
-                    )?;
+                    repo::scan_clear_missing(&conn, &id)?;
                     continue;
                 }
                 Some((id, _)) => {
-                    // Same path, changed content: refresh fingerprint, invalidate hash.
-                    conn.execute(
-                        "UPDATE books SET quick_fingerprint = ?2, content_hash = NULL,
-                                          missing_since = NULL WHERE id = ?1",
-                        rusqlite::params![id, fingerprint],
-                    )?;
-                    continue;
+                    // Metadata is refreshed below, outside the DB lock.
+                    Some(id)
                 }
-                None => {}
+                None => None,
             }
+        };
+
+        if let Some(id) = changed_id {
+            let (title, authors, language, description, cover_path) =
+                extract_metadata(path, source_format, &id, covers_dir);
+            let authors_json = serde_json::to_string(&authors).unwrap_or_else(|_| "[]".into());
+            let cover_path = cover_path.map(|p| p.to_string_lossy().to_string());
+            let conn = db.conn.lock().expect("db lock");
+            repo::scan_update_changed(
+                &conn,
+                &repo::ScannedBook {
+                    id: &id,
+                    fingerprint: &fingerprint,
+                    canonical_path: &path_str,
+                    source_format,
+                    reading_format,
+                    title: &title,
+                    authors_json: &authors_json,
+                    language: language.as_deref(),
+                    description: description.as_deref(),
+                    cover_cache_path: cover_path.as_deref(),
+                },
+            )?;
+            continue;
         }
 
         // New path → extract metadata outside the DB lock.
         let id = Uuid::new_v4().to_string();
         let (title, authors, language, description, cover_path) =
             extract_metadata(path, source_format, &id, covers_dir);
+        let authors_json = serde_json::to_string(&authors).unwrap_or_else(|_| "[]".into());
+        let cover_path = cover_path.map(|p| p.to_string_lossy().to_string());
 
         let conn = db.conn.lock().expect("db lock");
-        conn.execute(
-            "INSERT INTO books (id, quick_fingerprint, canonical_path, source_format,
-                                reading_format, title, authors, language, description, cover_cache_path)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            rusqlite::params![
-                id,
-                fingerprint,
-                path_str,
+        let inserted = repo::scan_insert(
+            &conn,
+            &repo::ScannedBook {
+                id: &id,
+                fingerprint: &fingerprint,
+                canonical_path: &path_str,
                 source_format,
                 reading_format,
-                title,
-                serde_json::to_string(&authors).unwrap_or_else(|_| "[]".into()),
-                language,
-                description,
-                cover_path.map(|p| p.to_string_lossy().to_string()),
-            ],
+                title: &title,
+                authors_json: &authors_json,
+                language: language.as_deref(),
+                description: description.as_deref(),
+                cover_cache_path: cover_path.as_deref(),
+            },
         )?;
-        added += 1;
+        added += u64::from(inserted);
     }
 
     // Pass 3: mark books under this root whose files vanished.
     let mut missing = 0u64;
     {
         let conn = db.conn.lock().expect("db lock");
-        let root_like = format!("{}%", root.to_string_lossy());
-        let mut stmt = conn.prepare(
-            "SELECT id, canonical_path FROM books
-             WHERE canonical_path LIKE ?1 AND missing_since IS NULL",
-        )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([&root_like], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
+        let rows = repo::scan_present_paths(&conn)?;
         for (id, p) in rows {
-            if !Path::new(&p).exists() {
-                conn.execute(
-                    "UPDATE books SET missing_since = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
-                    [&id],
-                )?;
+            let path = Path::new(&p);
+            if path.starts_with(root) && !path.exists() {
+                repo::scan_mark_missing(&conn, &id)?;
                 missing += 1;
             }
         }
-        conn.execute(
-            "UPDATE library_roots SET last_scan_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
-            [root_id],
-        )?;
+        repo::scan_mark_root_complete(&conn, root_id)?;
     }
 
     // Pass 4: lazy hashing + move-relink + duplicate suppression.
-    let relinked = hash_pass(db)?;
+    let (relinked, duplicates) = hash_pass(db)?;
+    added = added.saturating_sub(duplicates);
 
     Ok(ScanOutcome {
         found,
@@ -248,21 +245,14 @@ pub fn run_scan(
 }
 
 /// Hash rows lacking a content hash; use matches to relink moved files.
-fn hash_pass(db: &Db) -> Result<u64, crate::error::AppError> {
-    let pending: Vec<(String, String)> = {
+fn hash_pass(db: &Db) -> Result<(u64, u64), crate::error::AppError> {
+    let pending = {
         let conn = db.conn.lock().expect("db lock");
-        let mut stmt = conn.prepare(
-            "SELECT id, canonical_path FROM books
-             WHERE content_hash IS NULL AND missing_since IS NULL",
-        )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        rows
+        repo::scan_hash_pending(&conn)?
     };
 
     let mut relinked = 0u64;
+    let mut duplicates = 0u64;
     for (id, path) in pending {
         let Ok(hash) = hash_file(Path::new(&path)) else {
             continue;
@@ -272,44 +262,34 @@ fn hash_pass(db: &Db) -> Result<u64, crate::error::AppError> {
         // A missing book with identical content = the same file, moved.
         // The old row keeps its annotations; the new row (this one) is the
         // duplicate if it was just added by the scan.
-        let moved: Option<String> = conn
-            .query_row(
-                "SELECT id FROM books WHERE content_hash = ?1 AND missing_since IS NOT NULL AND id != ?2",
-                rusqlite::params![hash, id],
-                |r| r.get(0),
-            )
-            .ok();
+        let moved = repo::scan_missing_with_hash(&conn, &hash, &id)?;
 
         if let Some(old_id) = moved {
-            let fresh_row_has_no_user_data: bool = conn
-                .query_row(
-                    "SELECT NOT EXISTS(SELECT 1 FROM annotations WHERE book_id = ?1)
-                        AND NOT EXISTS(SELECT 1 FROM book_locations WHERE book_id = ?1)",
-                    [&id],
-                    |r| r.get(0),
-                )
-                .unwrap_or(false);
+            let fresh_row_has_no_user_data = repo::scan_book_has_no_user_data(&conn, &id)?;
             if fresh_row_has_no_user_data {
-                conn.execute(
-                    "UPDATE books SET canonical_path = (SELECT canonical_path FROM books WHERE id = ?2),
-                                      quick_fingerprint = (SELECT quick_fingerprint FROM books WHERE id = ?2),
-                                      content_hash = ?3, missing_since = NULL
-                     WHERE id = ?1",
-                    rusqlite::params![old_id, id, hash],
-                )?;
-                conn.execute("DELETE FROM books WHERE id = ?1", [&id])?;
+                repo::scan_relink_moved(&conn, &old_id, &id, &hash)?;
                 tracing::info!(old = old_id, new = id, "relinked moved book");
                 relinked += 1;
                 continue;
             }
         }
 
-        conn.execute(
-            "UPDATE books SET content_hash = ?2 WHERE id = ?1",
-            rusqlite::params![id, hash],
-        )?;
+        // Two live paths with identical bytes represent one publication in
+        // Stacks. Keep the earlier row and discard only a fresh row that has
+        // no reading data attached to it.
+        let duplicate_live = repo::scan_live_with_hash(&conn, &hash, &id)?;
+        if duplicate_live.is_some() {
+            let has_no_user_data = repo::scan_book_has_no_user_data(&conn, &id)?;
+            if has_no_user_data {
+                repo::scan_delete_book(&conn, &id)?;
+                duplicates += 1;
+                continue;
+            }
+        }
+
+        repo::scan_set_hash(&conn, &id, &hash)?;
     }
-    Ok(relinked)
+    Ok((relinked, duplicates))
 }
 
 fn extract_metadata(
@@ -349,7 +329,7 @@ fn extract_metadata(
     (fallback_title, Vec::new(), None, None, None)
 }
 
-fn quick_fingerprint(md: &std::fs::Metadata) -> String {
+pub(crate) fn quick_fingerprint(md: &std::fs::Metadata) -> String {
     let mtime = md
         .modified()
         .ok()
@@ -359,7 +339,7 @@ fn quick_fingerprint(md: &std::fs::Metadata) -> String {
     format!("{}:{}", md.len(), mtime)
 }
 
-fn hash_file(path: &Path) -> std::io::Result<String> {
+pub(crate) fn hash_file(path: &Path) -> std::io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     let mut file = std::fs::File::open(path)?;
     std::io::copy(&mut file, &mut hasher)?;
@@ -388,11 +368,7 @@ mod tests {
         let db = db::open(&base.join("data")).unwrap();
         {
             let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO library_roots (id, canonical_path, display_name) VALUES (1, ?1, 'test')",
-                [root.to_string_lossy().to_string()],
-            )
-            .unwrap();
+            repo::add_root(&conn, &root.to_string_lossy(), "test").unwrap();
         }
         Env {
             db,
@@ -429,17 +405,9 @@ mod tests {
         assert_eq!(second.added, 0, "rescan must not duplicate");
 
         let conn = env.db.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM books", [], |r| r.get(0))
-            .unwrap();
+        let count = repo::count_books(&conn).unwrap();
         assert_eq!(count, 2);
-        let hashed: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM books WHERE content_hash IS NOT NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let hashed = repo::scan_hashed_count(&conn).unwrap();
         assert_eq!(hashed, 2, "lazy hash pass fills all hashes");
         drop(conn);
         let _ = std::fs::remove_dir_all(env.base);
@@ -457,14 +425,15 @@ mod tests {
         let outcome = scan(&env);
         assert_eq!(outcome.added, 1);
         let conn = env.db.conn.lock().unwrap();
-        let (title, authors, language): (String, String, Option<String>) = conn
-            .query_row("SELECT title, authors, language FROM books", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .unwrap();
-        assert_eq!(title, "The Quiet Method");
-        assert!(authors.contains("Lectorium Fixtures"));
-        assert_eq!(language.as_deref(), Some("en"));
+        let book = repo::list_books(&conn, &repo::BookQuery::default())
+            .unwrap()
+            .remove(0);
+        assert_eq!(book.title, "The Quiet Method");
+        assert!(book
+            .authors
+            .iter()
+            .any(|author| author == "Lectorium Fixtures"));
+        assert_eq!(book.language.as_deref(), Some("en"));
         drop(conn);
         let _ = std::fs::remove_dir_all(env.base);
     }
@@ -479,9 +448,9 @@ mod tests {
         std::fs::copy(&epub, env.root.join("ml.epub")).unwrap();
         scan(&env);
         let conn = env.db.conn.lock().unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM books", [], |r| r.get(0))
-            .unwrap();
+        let title = repo::list_books(&conn, &repo::BookQuery::default()).unwrap()[0]
+            .title
+            .clone();
         assert_eq!(
             title, "ശാന്തമായ രീതി",
             "Malayalam title must survive extraction untouched"
@@ -500,12 +469,19 @@ mod tests {
         // reader progress exists for the book
         let book_id: String = {
             let conn = env.db.conn.lock().unwrap();
-            let id: String = conn
-                .query_row("SELECT id FROM books", [], |r| r.get(0))
-                .unwrap();
-            conn.execute(
-                "INSERT INTO book_locations (book_id, engine_type, locator_json) VALUES (?1,'text','{\"v\":1}')",
-                [&id],
+            let id = repo::list_books(&conn, &repo::BookQuery::default()).unwrap()[0]
+                .id
+                .clone();
+            repo::save_location(
+                &conn,
+                &id,
+                &repo::SavedLocation {
+                    engine_type: "text".into(),
+                    locator_json: "{\"v\":1,\"engine\":\"text\",\"primary\":{\"blockIndex\":0,\"charOffset\":0},\"textQuote\":null,\"coarse\":{\"sectionTitle\":null,\"blockIndex\":0}}".into(),
+                    section_title: None,
+                    page_index: None,
+                    updated_at: None,
+                },
             )
             .unwrap();
             id
@@ -519,24 +495,24 @@ mod tests {
         assert_eq!(outcome.relinked, 1, "hash match must relink, not duplicate");
 
         let conn = env.db.conn.lock().unwrap();
-        let (id, path, missing): (String, String, Option<String>) = conn
-            .query_row(
-                "SELECT id, canonical_path, missing_since FROM books",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        let book = repo::list_books(&conn, &repo::BookQuery::default())
+            .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
-        assert_eq!(id, book_id, "the original row (with user data) survives");
-        assert!(path.contains("moved"), "path updated to the new location");
-        assert!(missing.is_none());
-        let loc_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM book_locations WHERE book_id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(loc_count, 1, "reading position survives the move");
+        assert_eq!(
+            book.id, book_id,
+            "the original row (with user data) survives"
+        );
+        assert!(
+            book.canonical_path.contains("moved"),
+            "path updated to the new location"
+        );
+        assert!(!book.missing);
+        assert!(
+            repo::get_book(&conn, &book.id).unwrap().location.is_some(),
+            "reading position survives the move"
+        );
         drop(conn);
         let _ = std::fs::remove_dir_all(env.base);
     }
@@ -549,12 +525,19 @@ mod tests {
         scan(&env);
         {
             let conn = env.db.conn.lock().unwrap();
-            let id: String = conn
-                .query_row("SELECT id FROM books", [], |r| r.get(0))
-                .unwrap();
-            conn.execute(
-                "INSERT INTO book_locations (book_id, engine_type, locator_json) VALUES (?1,'text','{}')",
-                [&id],
+            let id = repo::list_books(&conn, &repo::BookQuery::default()).unwrap()[0]
+                .id
+                .clone();
+            repo::save_location(
+                &conn,
+                &id,
+                &repo::SavedLocation {
+                    engine_type: "text".into(),
+                    locator_json: "{\"v\":1,\"engine\":\"text\",\"primary\":{\"blockIndex\":0,\"charOffset\":0},\"textQuote\":null,\"coarse\":{\"sectionTitle\":null,\"blockIndex\":0}}".into(),
+                    section_title: None,
+                    page_index: None,
+                    updated_at: None,
+                },
             )
             .unwrap();
         }
@@ -563,18 +546,75 @@ mod tests {
         let outcome = scan(&env);
         assert_eq!(outcome.missing, 1);
         let conn = env.db.conn.lock().unwrap();
-        let (missing_since, locs): (Option<String>, i64) = conn
-            .query_row(
-                "SELECT b.missing_since,
-                        (SELECT count(*) FROM book_locations l WHERE l.book_id = b.id)
-                 FROM books b",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+        let book = repo::list_books(&conn, &repo::BookQuery::default())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(book.missing, "marked missing, not deleted");
+        assert!(
+            repo::get_book(&conn, &book.id).unwrap().location.is_some(),
+            "user data retained indefinitely"
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(env.base);
+    }
+
+    #[test]
+    fn identical_live_files_are_one_library_entry() {
+        let env = setup("duplicate");
+        let bytes = "The same publication bytes.";
+        std::fs::write(env.root.join("copy-one.txt"), bytes).unwrap();
+        std::fs::write(env.root.join("copy-two.txt"), bytes).unwrap();
+
+        let outcome = scan(&env);
+        assert_eq!(outcome.added, 1);
+        let conn = env.db.conn.lock().unwrap();
+        let count = repo::count_books(&conn).unwrap();
+        assert_eq!(count, 1);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(env.base);
+    }
+
+    #[test]
+    fn missing_detection_uses_path_components_not_string_prefixes() {
+        let env = setup("root-prefix");
+        let sibling = env.base.join("library-other").join("outside.txt");
+        {
+            let conn = env.db.conn.lock().unwrap();
+            let path = sibling.to_string_lossy().to_string();
+            repo::scan_insert(
+                &conn,
+                &repo::ScannedBook {
+                    id: "outside",
+                    fingerprint: "0:0",
+                    canonical_path: &path,
+                    source_format: "txt",
+                    reading_format: "text",
+                    title: "Outside",
+                    authors_json: "[]",
+                    language: None,
+                    description: None,
+                    cover_cache_path: None,
+                },
             )
             .unwrap();
-        assert!(missing_since.is_some(), "marked missing, not deleted");
-        assert_eq!(locs, 1, "user data retained indefinitely");
+        }
+
+        scan(&env);
+        let conn = env.db.conn.lock().unwrap();
+        assert!(!repo::get_book(&conn, "outside").unwrap().summary.missing);
         drop(conn);
+        let _ = std::fs::remove_dir_all(env.base);
+    }
+
+    #[test]
+    fn mobi_is_not_mislabeled_as_epub() {
+        let env = setup("mobi");
+        std::fs::write(env.root.join("legacy.mobi"), "not an epub container").unwrap();
+        let outcome = scan(&env);
+        assert_eq!(outcome.found, 0);
+        assert_eq!(outcome.added, 0);
         let _ = std::fs::remove_dir_all(env.base);
     }
 }

@@ -1,8 +1,9 @@
 import { marked } from "marked";
 import type { ThemeName } from "../../../config/tokens";
 import { stackFor, type TypographySettings } from "../../../config/typography";
+import { sentenceAroundSelection } from "../../../lib/selectionContext";
 import { fetchBookText } from "../../../services/bookData";
-import type { LocatorEnvelope } from "../locator";
+import { excerptAround, quoteContext, type LocatorEnvelope } from "../locator";
 import type {
   EngineAnnotation,
   EngineOpenArgs,
@@ -31,6 +32,8 @@ export class TextEngine implements ReaderEngine {
   private language: string | null = null;
   private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
   private selectionListener: (() => void) | null = null;
+  private externalLinkHandler: ((url: string) => void) | null = null;
+  private linkListener: ((event: MouseEvent) => void) | null = null;
 
   async open(args: EngineOpenArgs): Promise<void> {
     this.container = args.container;
@@ -49,9 +52,18 @@ export class TextEngine implements ReaderEngine {
     this.page.className = "text-engine-page";
     this.flow = document.createElement("div");
     this.flow.className = "text-engine-flow";
-    this.flow.innerHTML = sanitize(html);
+    this.flow.innerHTML = sanitizeTextHtml(html);
     this.page.appendChild(this.flow);
     this.container.appendChild(this.page);
+
+    this.linkListener = (event) => {
+      const anchor = (event.target as Element | null)?.closest?.("a[data-external-href]");
+      const url = anchor?.getAttribute("data-external-href");
+      if (!url) return;
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) this.externalLinkHandler?.(url);
+    };
+    this.flow.addEventListener("click", this.linkListener);
 
     this.blocks = Array.from(this.flow.children) as HTMLElement[];
     this.applyTypography(args.typography);
@@ -72,12 +84,35 @@ export class TextEngine implements ReaderEngine {
   }
 
   private firstVisibleBlock(): number {
-    if (!this.page) return 0;
+    return this.firstVisiblePosition().blockIndex;
+  }
+
+  private firstVisiblePosition(): { blockIndex: number; charOffset: number } {
+    if (!this.page) return { blockIndex: 0, charOffset: 0 };
+    const pageRect = this.page.getBoundingClientRect();
+    const doc = this.page.ownerDocument as Document & {
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    for (const inset of [8, 24, 48, 80]) {
+      const caret = doc.caretRangeFromPoint?.(pageRect.left + 12, pageRect.top + inset);
+      const node = caret?.startContainer;
+      if (!caret || !node || !this.flow?.contains(node)) continue;
+      const blockIndex = this.blocks.findIndex((block) => block.contains(node));
+      if (blockIndex === -1) continue;
+      const before = caret.cloneRange();
+      before.selectNodeContents(this.blocks[blockIndex]);
+      before.setEnd(node, caret.startOffset);
+      return { blockIndex, charOffset: before.toString().length };
+    }
     const pageLeft = this.pageIndex * (this.page.clientWidth + 64);
     for (let i = 0; i < this.blocks.length; i++) {
-      if (this.blocks[i].offsetLeft >= pageLeft - 8) return i;
+      const rects = Array.from(this.blocks[i].getClientRects());
+      if (rects.some((rect) => rect.right > pageRect.left && rect.left < pageRect.right)) {
+        return { blockIndex: i, charOffset: 0 };
+      }
+      if (this.blocks[i].offsetLeft >= pageLeft - 8) return { blockIndex: i, charOffset: 0 };
     }
-    return 0;
+    return { blockIndex: 0, charOffset: 0 };
   }
 
   private goToBlock(blockIndex: number): void {
@@ -85,6 +120,22 @@ export class TextEngine implements ReaderEngine {
     const block = this.blocks[Math.min(blockIndex, this.blocks.length - 1)];
     const pageWidth = this.page.clientWidth + 64;
     this.pageIndex = block ? Math.max(0, Math.round(block.offsetLeft / pageWidth)) : 0;
+    this.applyTransform();
+    this.announce();
+  }
+
+  private goToPosition(blockIndex: number, charOffset: number): void {
+    this.goToBlock(blockIndex);
+    if (!this.page) return;
+    const block = this.blocks[Math.min(blockIndex, this.blocks.length - 1)];
+    const caret = block ? collapsedRangeAt(block, charOffset) : null;
+    if (!caret) return;
+    const pageWidth = this.page.clientWidth + 64;
+    const currentOffset = this.pageIndex * pageWidth;
+    const rect = caret.getBoundingClientRect();
+    const pageRect = this.page.getBoundingClientRect();
+    const logicalLeft = rect.left - pageRect.left + currentOffset;
+    this.pageIndex = Math.max(0, Math.min(this.pageCount - 1, Math.floor(logicalLeft / pageWidth)));
     this.applyTransform();
     this.announce();
   }
@@ -97,12 +148,12 @@ export class TextEngine implements ReaderEngine {
 
   private announce(): void {
     if (!this.notify) return;
-    const blockIndex = this.firstVisibleBlock();
+    const { blockIndex, charOffset } = this.firstVisiblePosition();
     const heading = this.nearestHeading(blockIndex);
     const envelope: LocatorEnvelope = {
       v: 1,
       engine: "text",
-      primary: { blockIndex, charOffset: 0 },
+      primary: { blockIndex, charOffset },
       textQuote: null,
       coarse: {
         sectionTitle: heading,
@@ -123,8 +174,44 @@ export class TextEngine implements ReaderEngine {
   }
 
   display(locator: LocatorEnvelope | null): Promise<void> {
-    this.reflow(locator?.engine === "text" ? locator.primary.blockIndex : 0);
+    if (locator?.engine === "text") {
+      const resolved = this.resolveTextLocator(locator);
+      this.reflow(resolved.blockIndex);
+      this.goToPosition(resolved.blockIndex, resolved.charOffset);
+    } else {
+      this.reflow(0);
+    }
     return Promise.resolve();
+  }
+
+  private resolveTextLocator(locator: Extract<LocatorEnvelope, { engine: "text" }>): {
+    blockIndex: number;
+    charOffset: number;
+  } {
+    const preferred = Math.min(locator.primary.blockIndex, Math.max(0, this.blocks.length - 1));
+    const exact = locator.textQuote?.exact;
+    if (!exact) return { blockIndex: preferred, charOffset: locator.primary.charOffset };
+    const order = [preferred, ...this.blocks.map((_, index) => index)];
+    let best: { blockIndex: number; charOffset: number; score: number } | null = null;
+    for (const blockIndex of Array.from(new Set(order))) {
+      const text = this.blocks[blockIndex]?.textContent ?? "";
+      let from = 0;
+      while (from <= text.length) {
+        const at = text.indexOf(exact, from);
+        if (at === -1) break;
+        const prefix = locator.textQuote?.prefix ?? "";
+        const suffix = locator.textQuote?.suffix ?? "";
+        const score =
+          Number(text.substring(Math.max(0, at - prefix.length), at).endsWith(prefix)) +
+          Number(
+            text.substring(at + exact.length, at + exact.length + suffix.length).startsWith(suffix),
+          ) +
+          Number(blockIndex === preferred);
+        if (!best || score > best.score) best = { blockIndex, charOffset: at, score };
+        from = at + Math.max(1, exact.length);
+      }
+    }
+    return best ?? { blockIndex: preferred, charOffset: locator.primary.charOffset };
   }
 
   next(): Promise<void> {
@@ -163,6 +250,7 @@ export class TextEngine implements ReaderEngine {
     if (this.selectionListener) {
       document.removeEventListener("selectionchange", this.selectionListener);
     }
+    if (this.linkListener) this.flow?.removeEventListener("click", this.linkListener);
     if ("highlights" in CSS) CSS.highlights.delete("lectorium-text");
     this.resizeObserver?.disconnect();
     this.page?.remove();
@@ -200,10 +288,9 @@ export class TextEngine implements ReaderEngine {
       const text = this.blocks[i].textContent ?? "";
       const at = text.toLowerCase().indexOf(needle);
       if (at !== -1) {
-        const start = Math.max(0, at - 40);
         hits.push({
           target: `block:${i}`,
-          excerpt: `…${text.slice(start, at + needle.length + 40)}…`,
+          excerpt: excerptAround(text, at, needle.length),
           sectionTitle: this.nearestHeading(i),
         });
       }
@@ -217,6 +304,10 @@ export class TextEngine implements ReaderEngine {
       this.selectionListener = () => this.emitSelection();
       document.addEventListener("selectionchange", this.selectionListener);
     }
+  }
+
+  onExternalLink(handler: (url: string) => void): void {
+    this.externalLinkHandler = handler;
   }
 
   private emitSelection(): void {
@@ -240,15 +331,26 @@ export class TextEngine implements ReaderEngine {
         break;
       }
     }
+    const block = this.blocks[blockIndex];
+    const before = range.cloneRange();
+    before.selectNodeContents(block);
+    before.setEnd(range.startContainer, range.startOffset);
+    const charOffset = before.toString().length;
+    const blockText = block.textContent ?? "";
     const envelope: LocatorEnvelope = {
       v: 1,
       engine: "text",
-      primary: { blockIndex, charOffset: 0 },
-      textQuote: { exact: text, prefix: "", suffix: "" },
+      primary: { blockIndex, charOffset },
+      textQuote: quoteContext(blockText, charOffset, charOffset + text.length),
       coarse: { sectionTitle: this.nearestHeading(blockIndex), blockIndex },
     };
     this.selectionHandler({
       text,
+      context: sentenceAroundSelection(
+        blockText.slice(0, charOffset),
+        text,
+        blockText.slice(charOffset + text.length),
+      ),
       locator: envelope,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     });
@@ -271,6 +373,22 @@ export class TextEngine implements ReaderEngine {
       CSS.highlights.delete("lectorium-text");
     }
   }
+}
+
+function collapsedRangeAt(root: HTMLElement, offset: number): Range | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (offset <= consumed + node.data.length) {
+      const range = document.createRange();
+      range.setStart(node, Math.max(0, offset - consumed));
+      range.collapse(true);
+      return range;
+    }
+    consumed += node.data.length;
+  }
+  return null;
 }
 
 /** Locate `exact` within one block element, spanning child text nodes. */
@@ -313,30 +431,101 @@ function plainTextToHtml(raw: string): string {
 }
 
 /** Strip active content: local files are still untrusted input (ADR 0005). */
-function sanitize(html: string): string {
+export function sanitizeTextHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script, style, iframe, object, embed, form, link, meta").forEach((el) => {
-    el.remove();
-  });
-  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
-  const toClean: Element[] = [];
-  while (walker.nextNode()) toClean.push(walker.currentNode as Element);
-  for (const el of toClean) {
+  doc
+    .querySelectorAll(
+      "script, style, iframe, object, embed, form, input, button, textarea, select, link, meta, base, svg, math, canvas, video, audio, template",
+    )
+    .forEach((el) => el.remove());
+  const allowed = new Set([
+    "a",
+    "abbr",
+    "article",
+    "aside",
+    "b",
+    "bdi",
+    "bdo",
+    "blockquote",
+    "br",
+    "caption",
+    "cite",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "section",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "tr",
+    "u",
+    "ul",
+  ]);
+  const elements = Array.from(doc.body.querySelectorAll("*"));
+  for (const el of elements) {
+    const tag = el.tagName.toLowerCase();
+    if (!allowed.has(tag)) {
+      el.replaceWith(...Array.from(el.childNodes));
+      continue;
+    }
+    const semanticClass = /(?:callout|sidebar|box|note|anecdote|quote|epigraph)/i.test(
+      el.getAttribute("class") ?? "",
+    );
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name.toLowerCase();
-      const value = attr.value.trim().toLowerCase();
-      if (name.startsWith("on")) el.removeAttribute(attr.name);
+      const rawValue = attr.value.trim();
+      const value = rawValue.toLowerCase();
+      const globallyAllowed = name === "lang" || name === "dir" || name === "title";
+      const tableAllowed =
+        (tag === "td" || tag === "th") && ["colspan", "rowspan", "scope"].includes(name);
+      const imageAllowed = tag === "img" && ["alt", "width", "height"].includes(name);
+      if (globallyAllowed || tableAllowed || imageAllowed) continue;
+      if (tag === "a" && name === "href" && /^https?:\/\//i.test(value)) {
+        el.setAttribute("data-external-href", rawValue);
+      }
       if (
-        (name === "href" || name === "src") &&
-        (value.startsWith("javascript:") || value.startsWith("data:text"))
+        tag === "img" &&
+        name === "src" &&
+        /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(value)
       ) {
-        el.removeAttribute(attr.name);
+        continue;
       }
-      // remote references are blocked by CSP as well; strip eagerly
-      if ((name === "href" || name === "src") && /^https?:/i.test(value)) {
-        el.removeAttribute(attr.name);
-      }
+      el.removeAttribute(attr.name);
     }
+    if (semanticClass) el.classList.add("book-callout");
   }
   return doc.body.innerHTML;
 }

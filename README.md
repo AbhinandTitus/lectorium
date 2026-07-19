@@ -19,14 +19,15 @@ Milestones 0–2 are complete and verified; the Reader is already good enough to
 | **M2 — Reader depth** | ✅ Complete | TOC, search, selection toolbar, annotations + highlights, bookmarks, footnotes, fore-edge, **PDF Reflow** (reversible, page-preserving), Story/Study/Contemplative modes, typography calibration, **malicious-EPUB sanitizer** (verified inert), Malayalam end-to-end, 200% scaling |
 | **M3 — Commonplace + Recall** | ✅ Complete | Commonplace space (search/heading/kind facets), cross-links, Markdown/JSON export with source locators, vocabulary, opt-in non-scored Recall |
 | **M4 — 3D Reading Room** | ✅ Complete | R3F room (walnut desk, amber lamp, real cover, instanced shelves), demand rendering, ~600ms crossfade, unmount on Reader entry, High/Low/2D tiers, WebGL fallback |
-| **M5 — Hardening + release** | ⏳ In progress | Backup/restore + import, Settings sheet, Quiet Night, 10k-file benchmark, NSIS installer, `RELEASE_CHECKLIST.md` — done; final manual QA on the release binary remains |
+| **M5 — Hardening + release** | ⏳ In progress | Backup/restore + import, Settings, Quiet Night, offline WordNet, fullscreen/progress, 10k-file benchmark, and NSIS installer — done; final manual QA remains |
 
-All automated checks pass: `pnpm verify` (27 Vitest tests incl. the security sanitizer and Quiet Night suites), `cargo fmt/clippy/test` (12 Rust tests). See [CHANGELOG.md](CHANGELOG.md) for the milestone history.
+All automated checks pass: `pnpm verify` (44 Vitest tests across 8 files), `cargo fmt/clippy/test` (17 Rust tests), and the production dependency audit. See [CHANGELOG.md](CHANGELOG.md) for the milestone history.
 
 ### What already works (verified live in the running app)
 
 - Open EPUB / PDF / TXT / Markdown; close the app; **return to the exact page or CFI**.
 - Table of contents, in-book search, highlights/notes/bookmarks that **survive restart and file moves**.
+- Select a word or short phrase for one concise English definition from the bundled offline WordNet dictionary.
 - Keep passages to a personal Commonplace with headings; Study-mode chapter prompts.
 - PDF **Original ↔ Reflow** switching that preserves the page; scanned PDFs read visually and refuse Reflow with calm copy.
 - **Malayalam** rendering, search, and conjunct-spanning highlights with intact Unicode.
@@ -36,7 +37,7 @@ All automated checks pass: `pnpm verify` (27 Vitest tests incl. the security san
 ### What's left
 
 - **Release hardening (M5)**: installer, large-library stress tests, backup/restore drills, clean-machine checklist, `RELEASE_CHECKLIST.md`.
-- Smaller documented gaps: online dictionary wordlist not yet bundled, dedicated Contemplative layout, PDF Warm-Dim/Smart-Dark split, RTL fixture, Playwright visual-regression, Quiet Night bedtime window. All tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+- Smaller documented gaps: optional online dictionary adapter, dedicated Contemplative layout, PDF Warm-Dim/Smart-Dark split, RTL fixture, and Playwright visual regression. The English WordNet dictionary is bundled and works offline. All tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 

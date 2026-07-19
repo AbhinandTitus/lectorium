@@ -16,6 +16,10 @@ export interface CommonplaceEntry {
   engineType: "epub" | "pdf" | "text";
   createdAt: string;
   linkedIds: string[];
+  endLocatorJson?: string | null;
+  prefix?: string | null;
+  suffix?: string | null;
+  colorToken?: string | null;
 }
 
 export interface CommonplaceQuery {
@@ -35,6 +39,8 @@ export interface VocabularyEntry {
   locatorJson: string;
   note: string | null;
   createdAt?: string | null;
+  bookTitle?: string | null;
+  bookAuthors?: string[];
 }
 
 export interface RecallItem {
@@ -45,6 +51,7 @@ export interface RecallItem {
   bookTitle: string;
   exactQuote: string | null;
   note: string | null;
+  startLocatorJson: string;
 }
 
 export async function listCommonplace(query: CommonplaceQuery = {}): Promise<CommonplaceEntry[]> {

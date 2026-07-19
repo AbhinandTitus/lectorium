@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { applyTheme, type ThemeName } from "../../config/tokens";
 import {
   FONT_SIZE_MAX,
@@ -13,21 +15,31 @@ import type { BookDetail, ReadingMode } from "../../services/types";
 import { useLibrary } from "../../state/library";
 import { useNavigation } from "../../state/navigation";
 import type { LocatorEnvelope } from "./locator";
-import { parseEnvelope, serializeEnvelope } from "./locator";
+import { graphemes, parseEnvelope, serializeEnvelope, takeGraphemes } from "./locator";
 import type { EngineSelection, LocatorContext, ReaderEngine } from "./engines/types";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { TocDrawer } from "./TocDrawer";
 import { SearchPanel } from "./SearchPanel";
 import { ForeEdge } from "./ForeEdge";
+import { AnnotationsDrawer } from "./AnnotationsDrawer";
+import { ReadingProgress } from "./ReadingProgress";
 import { Calibration } from "./Calibration";
-import { define, type DefineResult } from "../../services/dictionary";
+import {
+  define,
+  dictionaryContext,
+  dictionaryTermFromSelection,
+  normalizeDictionaryTerm,
+  type DefineResult,
+} from "../../services/dictionary";
 import { addVocabulary } from "../../services/commonplace";
+import { useQuietNight } from "../../config/useQuietNight";
 import "./reader.css";
 
 const CHROME_FADE_MS = 2500;
 const AUTOSAVE_DEBOUNCE_MS = 800;
 /** show the re-entry ribbon after this long away */
 const RIBBON_GAP_MS = 4 * 60 * 60 * 1000;
+const READER_ACTIVITY_EVENT = "lectorium-reader-activity";
 
 /** Engines load lazily so epub.js / PDF.js never weigh down app launch. */
 async function makeEngine(format: string): Promise<ReaderEngine> {
@@ -47,12 +59,15 @@ async function makeEngine(format: string): Promise<ReaderEngine> {
   }
 }
 
-type Drawer = null | "toc" | "search";
+type Drawer = null | "toc" | "search" | "annotations";
 
 export function Reader() {
   const bookId = useNavigation((s) => s.openBookId);
+  const requestedLocatorJson = useNavigation((s) => s.openLocatorJson);
   const closeBook = useNavigation((s) => s.closeBook);
   const { settings, updateSettings } = useLibrary();
+  const quietNight = useQuietNight(settings.bedtime);
+  const effectiveTheme: ThemeName = quietNight ? "ember" : settings.theme;
 
   const [book, setBook] = useState<BookDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,18 +86,27 @@ export function Reader() {
   const [footnote, setFootnote] = useState<{ text: string; rect: DOMRect } | null>(null);
   const [pdfView, setPdfView] = useState<"original" | "reflow">("original");
   const [reflowWarning, setReflowWarning] = useState<string | null>(null);
+  const [reflowConfirmation, setReflowConfirmation] = useState(false);
   const [definePopover, setDefinePopover] = useState<{
     result: DefineResult;
     word: string;
+    context: string;
     selection: EngineSelection;
     rect: { x: number; y: number };
     kept: boolean;
   } | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [fullscreenNote, setFullscreenNote] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [externalUrl, setExternalUrl] = useState<string | null>(null);
+  const [bookAnnotations, setBookAnnotations] = useState<ann.Annotation[]>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ReaderEngine | null>(null);
   const saveTimer = useRef<number | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveFailed = useRef(false);
   /** most recent locator — survives flushes so bookmarks/prompts anchor */
   const lastLocator = useRef<{ locator: LocatorEnvelope; context: LocatorContext } | null>(null);
   const saveDirty = useRef(false);
@@ -90,8 +114,46 @@ export function Reader() {
   const annotationsRef = useRef<ann.Annotation[]>([]);
   const lastSection = useRef<string | null>(null);
   const modeRef = useRef<ReadingMode>("story");
+  const fullscreenTransition = useRef<Promise<boolean> | null>(null);
 
   const [calibrating, setCalibrating] = useState(false);
+
+  const setReaderFullscreen = useCallback(async (next?: boolean): Promise<boolean> => {
+    const active = fullscreenTransition.current;
+    // Some embedded-webview key paths can report the same physical key twice.
+    // A duplicate toggle joins the active transition instead of reversing it.
+    if (active && next === undefined) return active;
+    if (active) await active;
+
+    const transition = (async () => {
+      try {
+        if (lib.inTauri()) {
+          const appWindow = getCurrentWindow();
+          const current = await appWindow.isFullscreen();
+          const desired = next ?? !current;
+          if (current !== desired) await appWindow.setFullscreen(desired);
+          setIsFullscreen(desired);
+        } else {
+          const current = Boolean(document.fullscreenElement);
+          const desired = next ?? !current;
+          if (desired && !current) await document.documentElement.requestFullscreen();
+          if (!desired && current) await document.exitFullscreen();
+          setIsFullscreen(desired);
+        }
+        setFullscreenNote(null);
+        return true;
+      } catch {
+        setFullscreenNote("Full screen isn't available in this window.");
+        return false;
+      }
+    })();
+    fullscreenTransition.current = transition;
+    try {
+      return await transition;
+    } finally {
+      if (fullscreenTransition.current === transition) fullscreenTransition.current = null;
+    }
+  }, []);
 
   const typography: TypographySettings = useMemo(() => {
     const base = presets[settings.typographyPreset];
@@ -102,17 +164,45 @@ export function Reader() {
     return { ...base, fontSizePx, fontFamily: settings.calibratedFont ?? base.fontFamily };
   }, [settings.typographyPreset, fontDelta, settings.calibratedFont]);
 
-  const flushSave = useCallback(() => {
-    if (!saveDirty.current || !lastLocator.current || !bookId) return;
+  const flushSave = useCallback(async (): Promise<boolean> => {
+    if (!bookId) return true;
+    if (!saveDirty.current || !lastLocator.current) {
+      await saveQueue.current;
+      return !saveFailed.current;
+    }
     saveDirty.current = false;
-    const { locator, context } = lastLocator.current;
-    void lib.saveLocation(bookId, {
-      engineType: locator.engine,
-      locatorJson: serializeEnvelope(locator),
-      sectionTitle: context.sectionTitle,
-      pageIndex: context.pageIndex,
-    });
+    const snapshot = lastLocator.current;
+    const targetBookId = bookId;
+    const { locator, context } = snapshot;
+    const write = saveQueue.current.then(() =>
+      lib.saveLocation(targetBookId, {
+        engineType: locator.engine,
+        locatorJson: serializeEnvelope(locator),
+        sectionTitle: context.sectionTitle,
+        pageIndex: context.pageIndex,
+      }),
+    );
+    // A failed write must not poison later saves in the serialized queue.
+    saveQueue.current = write.catch(() => undefined);
+    try {
+      await write;
+      saveFailed.current = false;
+      setSaveNote(null);
+      return true;
+    } catch {
+      saveFailed.current = true;
+      if (lastLocator.current === snapshot) saveDirty.current = true;
+      setSaveNote("Reading place not saved yet. Lectorium will try again.");
+      return false;
+    }
   }, [bookId]);
+
+  const leaveReader = useCallback(async () => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    if (!(await flushSave())) return;
+    await setReaderFullscreen(false);
+    closeBook();
+  }, [closeBook, flushSave, setReaderFullscreen]);
 
   const onLocatorChanged = useCallback(
     (locator: LocatorEnvelope, context: LocatorContext) => {
@@ -121,7 +211,7 @@ export function Reader() {
       setSectionTitle(context.sectionTitle);
       setProgress(typeof locator.coarse.progress === "number" ? locator.coarse.progress : null);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(flushSave, AUTOSAVE_DEBOUNCE_MS);
+      saveTimer.current = window.setTimeout(() => void flushSave(), AUTOSAVE_DEBOUNCE_MS);
 
       // Study mode: one quiet optional prompt at a section boundary.
       const prev = lastSection.current;
@@ -161,6 +251,9 @@ export function Reader() {
     let disposed = false;
     const container = containerRef.current;
     setEngineReady(false);
+    lastLocator.current = null;
+    saveDirty.current = false;
+    saveFailed.current = false;
 
     void (async () => {
       try {
@@ -182,22 +275,45 @@ export function Reader() {
         });
         engine.onFootnote?.((note) => setFootnote(note));
         engine.onWheel?.((deltaY) => wheelFlipRef.current(deltaY));
+        engine.onKeyDown?.((input) => {
+          const event = new KeyboardEvent("keydown", {
+            ...input,
+            bubbles: true,
+            cancelable: true,
+          });
+          return !window.dispatchEvent(event);
+        });
+        engine.onActivity?.(() => window.dispatchEvent(new Event(READER_ACTIVITY_EVENT)));
+        engine.onExternalLink?.((url) => {
+          try {
+            const parsed = new URL(url);
+            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+              setExternalUrl(parsed.toString());
+            }
+          } catch {
+            // malformed publication links stay inert
+          }
+        });
         await engine.open({
           container,
           book: detail,
           fileUrl: lib.bookFileUrl(detail.id),
           typography,
-          theme: settings.theme,
+          theme: effectiveTheme,
+          publisherStyles: settings.epubPublisherStyles,
           onLocatorChanged,
         });
         if (disposed) {
           engine.destroy();
           return;
         }
-        const saved = detail.location ? parseEnvelope(detail.location.locatorJson) : null;
+        const requested = requestedLocatorJson ? parseEnvelope(requestedLocatorJson) : null;
+        const saved =
+          requested ?? (detail.location ? parseEnvelope(detail.location.locatorJson) : null);
         await engine.display(saved);
         await lib.markOpened(detail.id);
         annotationsRef.current = await ann.listAnnotations(detail.id);
+        setBookAnnotations(annotationsRef.current);
         refreshHighlights();
         if (!disposed) setEngineReady(true);
       } catch (e) {
@@ -210,7 +326,9 @@ export function Reader() {
 
     return () => {
       disposed = true;
-      flushSave();
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      void flushSave();
       engineRef.current?.destroy();
       engineRef.current = null;
     };
@@ -223,12 +341,15 @@ export function Reader() {
     engineRef.current?.applyTypography(typography);
   }, [typography]);
   useEffect(() => {
-    engineRef.current?.applyTheme(settings.theme);
-  }, [settings.theme]);
+    engineRef.current?.applyTheme(effectiveTheme);
+  }, [effectiveTheme]);
+  useEffect(() => {
+    engineRef.current?.applyPublisherStyles?.(settings.epubPublisherStyles);
+  }, [settings.epubPublisherStyles]);
 
   // flush the save on blur / hide / close
   useEffect(() => {
-    const flush = () => flushSave();
+    const flush = () => void flushSave();
     window.addEventListener("blur", flush);
     window.addEventListener("beforeunload", flush);
     document.addEventListener("visibilitychange", flush);
@@ -239,6 +360,65 @@ export function Reader() {
     };
   }, [flushSave]);
 
+  // Tauri can wait for the durable SQLite write before destroying the window.
+  // Browser lifecycle events cannot provide this guarantee on their own.
+  useEffect(() => {
+    if (!lib.inTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    let closing = false;
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (closing) return;
+        event.preventDefault();
+        closing = true;
+        if (saveTimer.current) window.clearTimeout(saveTimer.current);
+        const saved = await flushSave();
+        if (saved) {
+          await getCurrentWindow().destroy();
+        } else {
+          closing = false;
+        }
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [flushSave]);
+
+  // Keep the control label synchronized when the operating system changes
+  // the native fullscreen state. Browser mode remains useful for web QA.
+  useEffect(() => {
+    if (!lib.inTauri()) {
+      const syncBrowserState = () => setIsFullscreen(Boolean(document.fullscreenElement));
+      syncBrowserState();
+      document.addEventListener("fullscreenchange", syncBrowserState);
+      return () => document.removeEventListener("fullscreenchange", syncBrowserState);
+    }
+
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    const syncNativeState = () => {
+      void appWindow.isFullscreen().then((value) => {
+        if (!disposed) setIsFullscreen(value);
+      });
+    };
+    syncNativeState();
+    void appWindow.onResized(syncNativeState).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // chrome fade
   const wakeChrome = useCallback(() => {
     setChromeVisible(true);
@@ -247,8 +427,10 @@ export function Reader() {
   }, []);
   useEffect(() => {
     wakeChrome();
+    window.addEventListener(READER_ACTIVITY_EVENT, wakeChrome);
     return () => {
       if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
+      window.removeEventListener(READER_ACTIVITY_EVENT, wakeChrome);
     };
   }, [wakeChrome]);
 
@@ -311,6 +493,7 @@ export function Reader() {
       };
       await ann.addAnnotation(record);
       annotationsRef.current = [...annotationsRef.current, record];
+      setBookAnnotations(annotationsRef.current);
       refreshHighlights();
     },
     [bookId, refreshHighlights],
@@ -348,6 +531,7 @@ export function Reader() {
     };
     void ann.addAnnotation(record).then(() => {
       annotationsRef.current = [...annotationsRef.current, record];
+      setBookAnnotations(annotationsRef.current);
     });
   }, [bookId]);
 
@@ -369,9 +553,24 @@ export function Reader() {
           setReflowWarning("This PDF has no extractable text — Reflow isn't available.");
           return;
         }
-        setReflowWarning(result?.confidence === "low" ? result.reason : null);
+        if (result?.truncated) {
+          setReflowConfirmation(false);
+          setReflowWarning(
+            result.reason ??
+              "Reflow could not safely analyze the complete PDF. Original view remains active.",
+          );
+          return;
+        }
+        if (result?.confidence === "low") {
+          setReflowWarning(result.reason ?? "Reading order may be imperfect in Reflow.");
+          setReflowConfirmation(true);
+          return;
+        }
+        setReflowWarning(null);
+        setReflowConfirmation(false);
       } else {
         setReflowWarning(null);
+        setReflowConfirmation(false);
       }
       await engine.setViewMode?.(mode);
       setPdfView(mode);
@@ -403,9 +602,13 @@ export function Reader() {
           turn(e.shiftKey ? -1 : 1);
           e.preventDefault();
           break;
+        case "F11":
         case "f":
         case "F":
-          void toggleFullscreen();
+          if (!e.altKey && !e.metaKey) {
+            void setReaderFullscreen();
+            e.preventDefault();
+          }
           break;
         case "a":
         case "A":
@@ -432,7 +635,7 @@ export function Reader() {
           else if (drawer) setDrawer(null);
           else if (sheetOpen) setSheetOpen(false);
           else if (studyPrompt) setStudyPrompt(null);
-          else if (document.fullscreenElement) void document.exitFullscreen();
+          else if (isFullscreen) void setReaderFullscreen(false);
           // Esc never closes the book
           break;
         case "+":
@@ -458,13 +661,24 @@ export function Reader() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [turn, sheetOpen, drawer, noteDraft, studyPrompt, selection, wakeChrome, addBookmark]);
+  }, [
+    turn,
+    sheetOpen,
+    drawer,
+    noteDraft,
+    studyPrompt,
+    selection,
+    wakeChrome,
+    addBookmark,
+    isFullscreen,
+    setReaderFullscreen,
+  ]);
 
   if (!bookId) {
     return (
       <main className="reader reader-empty" aria-label="Reader">
         <p>No book is open.</p>
-        <button onClick={closeBook}>Back to the room</button>
+        <button onClick={() => void leaveReader()}>Back to the room</button>
       </main>
     );
   }
@@ -477,29 +691,58 @@ export function Reader() {
       onClick={dismissRibbon}
     >
       <header className={`reader-chrome reader-chrome-top${chromeVisible ? "" : " is-hidden"}`}>
-        <button
-          onClick={() => {
-            flushSave();
-            closeBook();
-          }}
-        >
-          ← Room
-        </button>
+        <button onClick={() => void leaveReader()}>← Room</button>
         <span className="reader-chrome-title">
           {book?.title}
           {sectionTitle ? ` — ${sectionTitle}` : ""}
         </span>
         <button onClick={() => setDrawer((d) => (d === "toc" ? null : "toc"))}>Contents</button>
         <button onClick={() => setDrawer((d) => (d === "search" ? null : "search"))}>Search</button>
+        <button onClick={() => setDrawer((d) => (d === "annotations" ? null : "annotations"))}>
+          Marks
+        </button>
+        <button
+          onClick={() => void setReaderFullscreen()}
+          aria-pressed={isFullscreen}
+          aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
+        >
+          {isFullscreen ? "Exit full screen" : "Full screen"}
+        </button>
         <button onClick={() => setSheetOpen((v) => !v)} aria-label="Appearance">
           Aa
         </button>
       </header>
 
+      {(saveNote || fullscreenNote) && (
+        <p className="reader-save-note" role="status">
+          {saveNote ?? fullscreenNote}
+        </p>
+      )}
+
+      {externalUrl && (
+        <aside className="external-link-sheet" role="dialog" aria-modal="true">
+          <h2>Open an external link?</h2>
+          <p>This leaves Lectorium and opens your system browser.</p>
+          <p className="external-link-address">{externalUrl}</p>
+          <div>
+            <button onClick={() => setExternalUrl(null)}>Stay here</button>
+            <button
+              onClick={() => {
+                const url = externalUrl;
+                setExternalUrl(null);
+                void openUrl(url);
+              }}
+            >
+              Open link
+            </button>
+          </div>
+        </aside>
+      )}
+
       {error ? (
         <div className="reader-error" role="alert">
           <p>{error}</p>
-          <button onClick={closeBook}>Back to the room</button>
+          <button onClick={() => void leaveReader()}>Back to the room</button>
         </div>
       ) : (
         <div className="reader-stage" onWheel={(e) => wheelFlip(e.deltaY)}>
@@ -544,11 +787,19 @@ export function Reader() {
           onHighlight={onHighlight}
           onNote={() => setNoteDraft({ selection, keep: false })}
           onDefine={() => {
-            const word = selection.text.trim().split(/\s+/)[0] ?? "";
+            const word = dictionaryTermFromSelection(selection.text);
+            const quote = selection.locator.textQuote;
+            const context =
+              selection.context ||
+              dictionaryContext(
+                quote?.prefix ?? "",
+                quote?.exact ?? selection.text,
+                quote?.suffix ?? "",
+              );
             const rect = { x: selection.rect.x, y: selection.rect.y };
             const captured = selection;
-            void define(word).then((result) =>
-              setDefinePopover({ result, word, rect, selection: captured, kept: false }),
+            void define(word, context).then((result) =>
+              setDefinePopover({ result, word, context, rect, selection: captured, kept: false }),
             );
           }}
           onKeep={() => setNoteDraft({ selection, keep: true })}
@@ -588,6 +839,13 @@ export function Reader() {
             <>
               <p className="define-word">
                 {definePopover.result.definition.word}
+                <span className="define-meta">
+                  {definePopover.result.definition.headword !==
+                    definePopover.result.definition.word &&
+                    ` · ${definePopover.result.definition.headword}`}
+                  {definePopover.result.definition.partOfSpeech &&
+                    ` · ${definePopover.result.definition.partOfSpeech}`}
+                </span>
                 {definePopover.result.definition.pronunciation && (
                   <span className="define-pron">
                     {" "}
@@ -608,9 +866,9 @@ export function Reader() {
               void addVocabulary({
                 id: crypto.randomUUID(),
                 bookId,
-                normalizedWord: definePopover.word.toLowerCase(),
+                normalizedWord: normalizeDictionaryTerm(definePopover.word),
                 displayedWord: definePopover.word,
-                sentence: definePopover.selection.text,
+                sentence: definePopover.context || definePopover.selection.text,
                 definition: definePopover.result.definition?.sense ?? null,
                 locatorJson: serializeEnvelope(definePopover.selection.locator),
                 note: null,
@@ -664,6 +922,7 @@ export function Reader() {
               };
               void ann.addAnnotation(record).then(() => {
                 annotationsRef.current = [...annotationsRef.current, record];
+                setBookAnnotations(annotationsRef.current);
               });
             }
             setStudyPrompt(null);
@@ -675,6 +934,8 @@ export function Reader() {
       {engineReady && engineRef.current && (
         <ForeEdge engine={engineRef.current} progress={progress} onNavigate={goToTarget} />
       )}
+
+      <ReadingProgress progress={progress} />
 
       {drawer === "toc" && engineReady && engineRef.current && (
         <TocDrawer
@@ -691,11 +952,45 @@ export function Reader() {
           onClose={() => setDrawer(null)}
         />
       )}
+      {drawer === "annotations" && (
+        <AnnotationsDrawer
+          annotations={bookAnnotations}
+          onNavigate={(locator) => {
+            setDrawer(null);
+            void engineRef.current?.display(locator).then(refreshHighlights);
+          }}
+          onDelete={(id) => {
+            void ann.deleteAnnotation(id).then(() => {
+              annotationsRef.current = annotationsRef.current.filter((item) => item.id !== id);
+              setBookAnnotations(annotationsRef.current);
+              refreshHighlights();
+            });
+          }}
+          onClose={() => setDrawer(null)}
+        />
+      )}
 
       {reflowWarning && (
         <div className="reflow-warning" role="status">
           <span>{reflowWarning}</span>
-          <button onClick={() => setReflowWarning(null)} aria-label="Dismiss">
+          {reflowConfirmation && (
+            <button
+              onClick={() => {
+                setReflowConfirmation(false);
+                setReflowWarning(null);
+                void engineRef.current?.setViewMode?.("reflow").then(() => setPdfView("reflow"));
+              }}
+            >
+              Preview reflow
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setReflowWarning(null);
+              setReflowConfirmation(false);
+            }}
+            aria-label="Dismiss"
+          >
             ×
           </button>
         </div>
@@ -708,11 +1003,14 @@ export function Reader() {
           mode={book.readingMode}
           isPdf={book.readingFormat === "pdf"}
           pdfView={pdfView}
+          isEpub={book.readingFormat === "epub"}
+          publisherStyles={settings.epubPublisherStyles}
           onTheme={(theme) => {
-            applyTheme(theme);
+            applyTheme(quietNight ? "ember" : theme);
             void updateSettings({ theme });
           }}
           onPreset={(typographyPreset) => void updateSettings({ typographyPreset })}
+          onPublisherStyles={(epubPublisherStyles) => void updateSettings({ epubPublisherStyles })}
           onMode={(mode) => {
             modeRef.current = mode;
             setBook({ ...book, readingMode: mode });
@@ -759,7 +1057,10 @@ function NoteSheet({
   const [heading, setHeading] = useState("");
   return (
     <aside className="note-sheet" role="dialog" aria-label={keep ? "Keep to Commonplace" : "Note"}>
-      <blockquote>{quote.length > 240 ? quote.slice(0, 240) + "…" : quote}</blockquote>
+      <blockquote>
+        {takeGraphemes(quote, 240)}
+        {graphemes(quote).length > 240 ? "…" : ""}
+      </blockquote>
       <textarea
         autoFocus
         placeholder={keep ? "Why keep this? (optional)" : "Your note (optional)"}
@@ -823,11 +1124,14 @@ function AppearanceSheet({
   mode,
   isPdf,
   pdfView,
+  isEpub,
+  publisherStyles,
   calibratedLabel,
   onTheme,
   onPreset,
   onMode,
   onPdfView,
+  onPublisherStyles,
   onCalibrate,
   onClearCalibration,
   onClose,
@@ -837,11 +1141,14 @@ function AppearanceSheet({
   mode: ReadingMode;
   isPdf: boolean;
   pdfView: "original" | "reflow";
+  isEpub: boolean;
+  publisherStyles: boolean;
   calibratedLabel: string | null;
   onTheme: (t: ThemeName) => void;
   onPreset: (p: PresetName) => void;
   onMode: (m: ReadingMode) => void;
   onPdfView: (v: "original" | "reflow") => void;
+  onPublisherStyles: (enabled: boolean) => void;
   onCalibrate: () => void;
   onClearCalibration: () => void;
   onClose: () => void;
@@ -874,6 +1181,27 @@ function AppearanceSheet({
               onClick={() => onPdfView("reflow")}
             >
               Reflow
+            </button>
+          </div>
+        </div>
+      )}
+      {isEpub && (
+        <div className="appearance-row" role="group" aria-label="EPUB style">
+          <span>EPUB style</span>
+          <div>
+            <button
+              className={!publisherStyles ? "is-active" : ""}
+              onClick={() => onPublisherStyles(false)}
+            >
+              Reader
+            </button>
+            <button
+              className={publisherStyles ? "is-active" : ""}
+              onClick={() => onPublisherStyles(true)}
+              disabled={theme === "ember"}
+              title={theme === "ember" ? "Publisher style is available with Paper" : undefined}
+            >
+              Publisher
             </button>
           </div>
         </div>
@@ -914,19 +1242,12 @@ function AppearanceSheet({
         )}
       </div>
       <p className="appearance-hint">
-        T contents · Ctrl+F search · B bookmark · Ctrl± text size · Esc closes
+        F or F11 full screen · T contents · Ctrl+F search · B bookmark · Ctrl± text size · Esc
+        closes
       </p>
       <button className="appearance-close" onClick={onClose} aria-label="Close appearance">
         ×
       </button>
     </aside>
   );
-}
-
-async function toggleFullscreen(): Promise<void> {
-  if (document.fullscreenElement) {
-    await document.exitFullscreen();
-  } else {
-    await document.documentElement.requestFullscreen();
-  }
 }

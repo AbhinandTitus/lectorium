@@ -7,6 +7,10 @@ use quick_xml::Reader;
 use std::io::Read;
 use std::path::Path;
 
+const MAX_CONTAINER_BYTES: u64 = 1024 * 1024;
+const MAX_OPF_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_COVER_BYTES: u64 = 20 * 1024 * 1024;
+
 #[derive(Debug, Default, Clone)]
 pub struct EpubMeta {
     pub title: Option<String>,
@@ -23,16 +27,22 @@ pub fn read_epub_meta(path: &Path) -> Option<EpubMeta> {
 
     let opf_path = {
         let mut container = String::new();
-        zip.by_name("META-INF/container.xml")
-            .ok()?
-            .read_to_string(&mut container)
-            .ok()?;
+        let mut entry = zip.by_name("META-INF/container.xml").ok()?;
+        if entry.size() > MAX_CONTAINER_BYTES {
+            return None;
+        }
+        entry.read_to_string(&mut container).ok()?;
         find_attr(&container, "rootfile", "full-path")?
     };
 
     let opf_dir = opf_path.rsplit_once('/').map(|(d, _)| d.to_string());
     let mut opf = String::new();
-    zip.by_name(&opf_path).ok()?.read_to_string(&mut opf).ok()?;
+    let mut opf_entry = zip.by_name(&opf_path).ok()?;
+    if opf_entry.size() > MAX_OPF_BYTES {
+        return None;
+    }
+    opf_entry.read_to_string(&mut opf).ok()?;
+    drop(opf_entry);
 
     let mut meta = parse_opf(&opf);
 
@@ -45,7 +55,15 @@ pub fn read_epub_meta(path: &Path) -> Option<EpubMeta> {
         let full = normalize_zip_path(&full);
         if let Ok(mut entry) = zip.by_name(&full) {
             let mut bytes = Vec::new();
-            if entry.read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
+            if entry.size() <= MAX_COVER_BYTES
+                && entry
+                    .by_ref()
+                    .take(MAX_COVER_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .is_ok()
+                && !bytes.is_empty()
+                && bytes.len() as u64 <= MAX_COVER_BYTES
+            {
                 let ext = full
                     .rsplit_once('.')
                     .map(|(_, e)| e.to_ascii_lowercase())
