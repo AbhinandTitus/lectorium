@@ -23,6 +23,8 @@ export interface ReflowResult {
   reason: string | null;
   /** true when pages carried no extractable text (scanned / broken encoding) */
   textUnavailable: boolean;
+  /** true when analysis stopped before the final source page */
+  truncated: boolean;
 }
 
 interface Item {
@@ -38,6 +40,7 @@ const GARBLE_RATIO = 0.4; // fraction of replacement/control chars that means br
 
 export async function analyzeReflow(doc: PDFDocumentProxy, maxPages = 400): Promise<ReflowResult> {
   const pageCount = Math.min(doc.numPages, maxPages);
+  const truncated = pageCount < doc.numPages;
   const blocks: ReflowBlock[] = [];
   let anyText = false;
   let multiColumnPages = 0;
@@ -72,6 +75,7 @@ export async function analyzeReflow(doc: PDFDocumentProxy, maxPages = 400): Prom
       confidence: "low",
       reason: null,
       textUnavailable: true,
+      truncated,
     };
   }
 
@@ -148,7 +152,12 @@ export async function analyzeReflow(doc: PDFDocumentProxy, maxPages = 400): Prom
     reason = "Little structured text was found; reflow may be unreliable.";
   }
 
-  return { blocks, confidence, reason, textUnavailable: false };
+  if (truncated) {
+    confidence = "low";
+    reason = `Reflow analysis is limited to the first ${maxPages} pages of this PDF.`;
+  }
+
+  return { blocks, confidence, reason, textUnavailable: false, truncated };
 }
 
 function isGarbled(items: Item[]): boolean {

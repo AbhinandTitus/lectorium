@@ -6,7 +6,7 @@ import { BookCover } from "../../components/BookCover";
 import { Settings } from "../../app/Settings";
 import { ErrorBoundary } from "../../app/ErrorBoundary";
 import { isQuietNight } from "../../config/quietNight";
-import { webglAvailable } from "./Room3D";
+import { webglAvailable } from "./webgl";
 import "./room.css";
 
 // Three.js is heavy; never let it weigh down launch. Loaded only when the
@@ -24,8 +24,10 @@ export function Room() {
   const openBook = useNavigation((s) => s.openBook);
   const { status, desk, settings } = useLibrary();
 
-  const current = desk.find((b) => b.deskRole === "current") ?? desk[0] ?? null;
-  const companions = desk.filter((b) => b !== current).slice(0, 2);
+  const current = desk.find((b) => b.deskRole === "current") ?? null;
+  const companions = desk
+    .filter((b) => b.deskRole === "companion" || b.deskRole === "short")
+    .slice(0, 2);
 
   const [webgl] = useState(webglAvailable);
   const [settingsOpen, setSettingsOpen] = useState(false);

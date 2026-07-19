@@ -37,6 +37,43 @@
   margin-top: 0.75rem;
 }
 
+.onboarding-search {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  color: var(--color-text-primary);
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  font: inherit;
+}
+
+.onboarding-books {
+  display: flex;
+  max-height: 15rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-books button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--color-hairline);
+  text-align: start;
+}
+
+.onboarding-books span {
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
 .onboarding-primary {
   padding: 0.8rem 1.6rem;
   border: 1px solid var(--color-accent);

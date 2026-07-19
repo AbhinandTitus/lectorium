@@ -3,10 +3,13 @@ import type Section from "epubjs/types/section";
 import type { ThemeName } from "../../../config/tokens";
 import { themes } from "../../../config/tokens";
 import { stackFor, type TypographySettings } from "../../../config/typography";
+import { sentenceAroundSelection } from "../../../lib/selectionContext";
 import { fetchBookBytes } from "../../../services/bookData";
-import type { LocatorEnvelope, TextQuote } from "../locator";
+import { takeGraphemes, type LocatorEnvelope, type TextQuote } from "../locator";
+import { epubReadingProgress } from "../progress";
 import type {
   EngineAnnotation,
+  EngineKeyInput,
   EngineOpenArgs,
   EngineSelection,
   ReaderEngine,
@@ -20,25 +23,98 @@ interface RelocatedLocation {
     href: string;
     index: number;
     percentage?: number;
+    displayed?: {
+      page: number;
+      total: number;
+    };
   };
+  atEnd?: boolean;
 }
 
 /** W3C-style text-quote anchor with ~64 chars of context on each side. */
 function buildTextQuote(range: Range, exact: string): TextQuote {
-  const context = (node: Node | null, offset: number, before: boolean): string => {
-    if (!node || node.nodeType !== Node.TEXT_NODE) return "";
-    const data = (node as Text).data;
-    const slice = before
-      ? data.slice(Math.max(0, offset - 64), offset)
-      : data.slice(offset, offset + 64);
-    // never cut inside a surrogate pair (Malayalam-safe truncation)
-    return slice.replace(/^[\uDC00-\uDFFF]/, "").replace(/[\uD800-\uDBFF]$/, "");
-  };
+  const root = range.startContainer.ownerDocument?.body;
+  if (!root) return { exact, prefix: "", suffix: "" };
+  const before = range.cloneRange();
+  before.selectNodeContents(root);
+  before.setEnd(range.startContainer, range.startOffset);
+  const after = range.cloneRange();
+  after.selectNodeContents(root);
+  after.setStart(range.endContainer, range.endOffset);
   return {
     exact,
-    prefix: context(range.startContainer, range.startOffset, true),
-    suffix: context(range.endContainer, range.endOffset, false),
+    prefix: takeGraphemes(before.toString(), 64, true),
+    suffix: takeGraphemes(after.toString(), 64),
   };
+}
+
+function buildCollapsedTextQuote(range: Range): TextQuote | null {
+  const root = range.startContainer.ownerDocument?.body;
+  if (!root) return null;
+  const before = range.cloneRange();
+  before.selectNodeContents(root);
+  before.setEnd(range.startContainer, range.startOffset);
+  const full = root.textContent ?? "";
+  const remainder = full.substring(before.toString().length);
+  const leading = remainder.search(/\S/u);
+  if (leading === -1) return null;
+  const start = before.toString().length + leading;
+  const exact = takeGraphemes(full.substring(start), 32);
+  if (!exact.trim()) return null;
+  return {
+    exact,
+    prefix: takeGraphemes(full.substring(0, start), 64, true),
+    suffix: takeGraphemes(full.substring(start + exact.length), 64),
+  };
+}
+
+/** Resolve a quote inside a loaded spine section and return a fresh CFI. */
+function cfiForTextQuote(section: Section, quote: TextQuote): string | null {
+  const root = section.contents;
+  if (!root || !quote.exact) return null;
+  const walker = section.document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let full = "";
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    nodes.push(node);
+    full += node.data;
+  }
+  const candidates: { at: number; score: number }[] = [];
+  let from = 0;
+  while (from <= full.length) {
+    const at = full.indexOf(quote.exact, from);
+    if (at === -1) break;
+    const before = full.substring(Math.max(0, at - quote.prefix.length), at);
+    const after = full.substring(
+      at + quote.exact.length,
+      at + quote.exact.length + quote.suffix.length,
+    );
+    candidates.push({
+      at,
+      score: Number(before.endsWith(quote.prefix)) + Number(after.startsWith(quote.suffix)),
+    });
+    from = at + Math.max(1, quote.exact.length);
+  }
+  const best = candidates.sort((a, b) => b.score - a.score)[0];
+  if (!best) return null;
+  const locate = (offset: number): { node: Text; offset: number } | null => {
+    let consumed = 0;
+    for (const node of nodes) {
+      if (offset <= consumed + node.data.length) {
+        return { node, offset: offset - consumed };
+      }
+      consumed += node.data.length;
+    }
+    return null;
+  };
+  const start = locate(best.at);
+  const end = locate(best.at + quote.exact.length);
+  if (!start || !end) return null;
+  const range = section.document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return section.cfiFromRange(range);
 }
 
 /**
@@ -139,19 +215,27 @@ export class EpubEngine implements ReaderEngine {
   private language: string | null = null;
   private typography: TypographySettings | null = null;
   private theme: ThemeName = "ember";
+  private publisherStyles = false;
   private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
   private footnoteHandler: ((note: { text: string; rect: DOMRect }) => void) | null = null;
   private wheelHandler: ((deltaY: number) => void) | null = null;
+  private keyHandler: ((event: EngineKeyInput) => boolean) | null = null;
+  private activityHandler: (() => void) | null = null;
+  private externalLinkHandler: ((url: string) => void) | null = null;
   private appliedHighlights = new Map<string, string>(); // id -> cfi
   private container: HTMLElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeTimer: number | null = null;
+  private relocationGeneration = 0;
+  private spineCount = 1;
 
   async open(args: EngineOpenArgs): Promise<void> {
     const bytes = await fetchBookBytes(args.fileUrl);
     this.language = args.book.language;
+    this.publisherStyles = args.publisherStyles;
     this.book = ePub(bytes);
     const book = this.book;
+    this.spineCount = Math.max(1, (await book.loaded.spine).length);
 
     // Sanitize each chapter's parsed DOM before epub.js serializes it into
     // an iframe, so hostile remote resources never begin loading (ADR 0005).
@@ -196,6 +280,12 @@ export class EpubEngine implements ReaderEngine {
       if (!text.trim() || !this.selectionHandler) return;
       const range = sel!.getRangeAt(0);
       const rect = range.getBoundingClientRect();
+      const before = range.cloneRange();
+      before.selectNodeContents(contents.document.body);
+      before.setEnd(range.startContainer, range.startOffset);
+      const after = range.cloneRange();
+      after.selectNodeContents(contents.document.body);
+      after.setStart(range.endContainer, range.endOffset);
       const iframe = this.container?.querySelector("iframe");
       const frameRect = iframe?.getBoundingClientRect() ?? { left: 0, top: 0 };
       const location = this.rendition?.currentLocation() as unknown as
@@ -213,6 +303,7 @@ export class EpubEngine implements ReaderEngine {
       };
       this.selectionHandler({
         text,
+        context: sentenceAroundSelection(before.toString(), text, after.toString()),
         locator: envelope,
         rect: {
           x: rect.x + frameRect.left,
@@ -239,6 +330,7 @@ export class EpubEngine implements ReaderEngine {
             anchor.getAttribute("epub:type") ??
             anchor.getAttributeNS?.("http://www.idpf.org/2007/ops", "type");
           const href = anchor.getAttribute("href") ?? "";
+          const externalHref = anchor.getAttribute("data-external-href");
           if (epubType === "noteref" || href.startsWith("#")) {
             const id = href.split("#")[1];
             const target = id ? contents.document.getElementById(id) : null;
@@ -254,10 +346,12 @@ export class EpubEngine implements ReaderEngine {
                 rect: new DOMRect(r.x + frameRect.left, r.y + frameRect.top, r.width, r.height),
               });
             }
-          } else if (/^https?:/i.test(href)) {
+          } else if (externalHref || /^https?:/i.test(href)) {
             // never navigate the reading surface to a remote origin
             e.preventDefault();
             e.stopPropagation();
+            const url = externalHref ?? href;
+            if (/^https?:\/\//i.test(url)) this.externalLinkHandler?.(url);
           }
         },
         true,
@@ -276,6 +370,21 @@ export class EpubEngine implements ReaderEngine {
         },
         { passive: false },
       );
+
+      // EPUB lives in an iframe, so keyboard and pointer events do not bubble
+      // into the reader shell. Forward them explicitly to keep fullscreen,
+      // page turns, and the fading controls available while reading.
+      contents.document.addEventListener("keydown", (event: KeyboardEvent) => {
+        const consumed = this.keyHandler?.({
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          metaKey: event.metaKey,
+        });
+        if (consumed) event.preventDefault();
+      });
+      contents.document.addEventListener("mousemove", () => this.activityHandler?.());
     });
 
     this.applyTypography(args.typography);
@@ -312,26 +421,56 @@ export class EpubEngine implements ReaderEngine {
     this.resizeObserver.observe(args.container);
 
     this.rendition.on("relocated", (location: RelocatedLocation) => {
-      void (async () => {
-        const sectionTitle = await this.sectionTitle(location.start.href);
-        const envelope: LocatorEnvelope = {
-          v: 1,
-          engine: "epub",
-          primary: {
-            cfi: location.start.cfi,
-            spineIndex: location.start.index,
-            href: location.start.href,
-          },
-          textQuote: null, // captured by annotation flows from M2
-          coarse: {
-            sectionTitle,
-            spineIndex: location.start.index,
-            progress: location.start.percentage,
-          },
-        };
-        args.onLocatorChanged(envelope, { sectionTitle, pageIndex: null });
-      })();
+      this.announceRelocation(location, args);
     });
+
+    // epub.js only reports text-length-based percentages after its location
+    // map exists. Generate it without delaying the first page; the temporary
+    // display estimate is replaced as soon as the map is ready.
+    void book.locations
+      .generate(1600)
+      .then(() => {
+        if (this.book !== book || !this.rendition) return;
+        const current = this.rendition.currentLocation() as unknown as RelocatedLocation;
+        if (!current?.start?.cfi) return;
+        const percentage = book.locations.percentageFromCfi(current.start.cfi);
+        this.announceRelocation({ ...current, start: { ...current.start, percentage } }, args);
+      })
+      .catch(() => {
+        // The chapter/page estimate remains available for malformed books.
+      });
+  }
+
+  private announceRelocation(location: RelocatedLocation, args: EngineOpenArgs): void {
+    const generation = ++this.relocationGeneration;
+    void (async () => {
+      const sectionTitle = await this.sectionTitle(location.start.href);
+      let textQuote: TextQuote | null = null;
+      try {
+        const range = await this.book?.getRange(location.start.cfi);
+        if (range) textQuote = buildCollapsedTextQuote(range);
+      } catch {
+        // primary + coarse anchors still remain valid
+      }
+      const progress = epubReadingProgress(location.start, this.spineCount, location.atEnd);
+      const envelope: LocatorEnvelope = {
+        v: 1,
+        engine: "epub",
+        primary: {
+          cfi: location.start.cfi,
+          spineIndex: location.start.index,
+          href: location.start.href,
+        },
+        textQuote,
+        coarse: {
+          sectionTitle,
+          spineIndex: location.start.index,
+          ...(progress === null ? {} : { progress }),
+        },
+      };
+      if (generation !== this.relocationGeneration) return;
+      args.onLocatorChanged(envelope, { sectionTitle, pageIndex: null });
+    })();
   }
 
   private async sectionTitle(href: string): Promise<string | null> {
@@ -348,9 +487,18 @@ export class EpubEngine implements ReaderEngine {
     if (!this.rendition) return;
     if (locator && locator.engine === "epub") {
       try {
+        if (locator.textQuote?.exact && this.book) {
+          const range = await this.book.getRange(locator.primary.cfi);
+          if (!range.toString().includes(locator.textQuote.exact)) throw new Error("stale CFI");
+        }
         await this.rendition.display(locator.primary.cfi);
         return;
       } catch {
+        const quoteTarget = await this.findTextQuote(locator);
+        if (quoteTarget) {
+          await this.rendition.display(quoteTarget);
+          return;
+        }
         // fall through to coarse anchor — never jump to a rounded percentage
         if (typeof locator.coarse.spineIndex === "number") {
           await this.rendition.display(locator.coarse.spineIndex);
@@ -359,6 +507,28 @@ export class EpubEngine implements ReaderEngine {
       }
     }
     await this.rendition.display();
+  }
+
+  private async findTextQuote(locator: LocatorEnvelope): Promise<string | null> {
+    if (locator.engine !== "epub" || !locator.textQuote?.exact || !this.book) return null;
+    const count = (await this.book.loaded.spine).length;
+    const preferred = locator.coarse.spineIndex ?? locator.primary.spineIndex;
+    const indices = [preferred, preferred - 1, preferred + 1];
+    for (let index = 0; index < count; index += 1) indices.push(index);
+    for (const index of Array.from(new Set(indices))) {
+      if (index < 0 || index >= count) continue;
+      const section = this.book.spine.get(index);
+      try {
+        await Promise.resolve(section.load(this.book.load.bind(this.book)));
+        const target = cfiForTextQuote(section, locator.textQuote);
+        if (target) return target;
+      } catch {
+        // continue through malformed sections
+      } finally {
+        section.unload();
+      }
+    }
+    return null;
   }
 
   async next(): Promise<void> {
@@ -379,9 +549,20 @@ export class EpubEngine implements ReaderEngine {
     this.injectContentStyles();
   }
 
+  applyPublisherStyles(enabled: boolean): void {
+    this.publisherStyles = enabled;
+    this.injectContentStyles();
+  }
+
   /** The reading-theme CSS injected into every chapter document. */
   /** Cosmetic rules delivered as an EXTERNAL stylesheet (CSP-permitted). */
   private themeLinkCss(palette: (typeof themes)[keyof typeof themes], lineHeight: number): string {
+    if (this.publisherStyles && this.theme === "paper") {
+      return `
+        a { color: ${palette.accent} !important; text-decoration: underline; text-underline-offset: 2px; }
+        ::selection { background: ${palette.selection}; }
+      `;
+    }
     // A publisher/Calibre wrapper often ships its own light background; force
     // every element transparent so only html/body (painted below via CSSOM)
     // show the page color. Keep link/selection colors on-theme.
@@ -389,6 +570,16 @@ export class EpubEngine implements ReaderEngine {
       * { background-color: transparent !important; }
       a { color: ${palette.accent} !important; text-decoration: underline; text-underline-offset: 2px; }
       p { line-height: ${lineHeight} !important; }
+      aside, blockquote, [role="note"], [role="doc-tip"], [role="doc-example"],
+      [epub\\:type~="sidebar"], [epub\\:type~="note"], [epub\\:type~="tip"],
+      [class*="callout" i], [class*="sidebar" i], [class~="box" i],
+      [class*="anecdote" i], [class*="blockquote" i] {
+        background-color: ${palette.raised} !important;
+        border-inline-start: 0.2rem solid ${palette.accent} !important;
+        border-radius: 0.35rem;
+        margin-block: 1.25em;
+        padding: 0.85em 1em;
+      }
       ::selection { background: ${palette.selection}; }
       img, svg, video { forced-color-adjust: none; }
     `;
@@ -538,6 +729,18 @@ export class EpubEngine implements ReaderEngine {
 
   onWheel(handler: (deltaY: number) => void): void {
     this.wheelHandler = handler;
+  }
+
+  onKeyDown(handler: (event: EngineKeyInput) => boolean): void {
+    this.keyHandler = handler;
+  }
+
+  onActivity(handler: () => void): void {
+    this.activityHandler = handler;
+  }
+
+  onExternalLink(handler: (url: string) => void): void {
+    this.externalLinkHandler = handler;
   }
 
   setHighlights(annotations: EngineAnnotation[]): void {

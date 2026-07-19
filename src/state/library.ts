@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { AppStatus, BookSummary, ScanEvent } from "../services/types";
 import * as lib from "../services/library";
 import type { StoredSettings } from "../services/library";
+import { useNavigation } from "./navigation";
 
 interface LibraryState {
   status: AppStatus | null;
@@ -35,7 +36,6 @@ export const useLibrary = create<LibraryState>((set, get) => ({
       await lib.onScanEvent((ev) => get().handleScanEvent(ev));
       // Direct resume: `--resume` launch or the user's standing preference.
       if ((status.resumeRequested || settings.directResume) && status.lastLocationBookId) {
-        const { useNavigation } = await import("./navigation");
         useNavigation.getState().openBook(status.lastLocationBookId);
       }
     }

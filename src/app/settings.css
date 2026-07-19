@@ -118,3 +118,25 @@
   font-size: 0.85rem;
   line-height: 1.5;
 }
+
+.settings-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  background: var(--color-page);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.settings-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.settings-confirm > div button:last-child {
+  color: var(--color-accent);
+}

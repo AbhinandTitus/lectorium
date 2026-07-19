@@ -14,6 +14,7 @@ export interface EngineOpenArgs {
   fileUrl: string;
   typography: TypographySettings;
   theme: ThemeName;
+  publisherStyles: boolean;
   /** called on every settle so the shell can autosave */
   onLocatorChanged: (locator: LocatorEnvelope, context: LocatorContext) => void;
 }
@@ -35,6 +36,8 @@ export interface SearchHit {
 /** A selection the user made in book content. */
 export interface EngineSelection {
   text: string;
+  /** complete surrounding sentence when the engine can recover it */
+  context: string;
   locator: LocatorEnvelope;
   /** viewport rectangle of the selection for toolbar placement */
   rect: { x: number; y: number; width: number; height: number };
@@ -44,6 +47,14 @@ export interface EngineAnnotation {
   id: string;
   locator: LocatorEnvelope;
   colorToken: string;
+}
+
+export interface EngineKeyInput {
+  key: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
 }
 
 /**
@@ -78,6 +89,14 @@ export interface ReaderEngine {
    * The handler receives the raw wheel deltaY; the caller throttles.
    */
   onWheel?(handler: (deltaY: number) => void): void;
+  /** forward keys from an iframe-backed reading surface; true means consumed */
+  onKeyDown?(handler: (event: EngineKeyInput) => boolean): void;
+  /** pointer activity inside an iframe should wake the shell's faded controls */
+  onActivity?(handler: () => void): void;
+  /** external URL activated; the shell owns confirmation and system opening */
+  onExternalLink?(handler: (url: string) => void): void;
+  /** switch EPUB between Lectorium's reader style and publisher CSS */
+  applyPublisherStyles?(enabled: boolean): void;
 
   // --- PDF-only presentation controls (undefined on other engines) ---
   /** analyze suitability for the reversible Reflow view */
@@ -85,6 +104,7 @@ export interface ReaderEngine {
     confidence: "high" | "low";
     reason: string | null;
     textUnavailable: boolean;
+    truncated: boolean;
     blocks: unknown[];
   } | null>;
   setViewMode?(mode: "original" | "reflow"): Promise<void>;

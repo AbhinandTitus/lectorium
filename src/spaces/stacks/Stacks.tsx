@@ -23,6 +23,7 @@ export function Stacks() {
   const [exhausted, setExhausted] = useState(false);
   const [selected, setSelected] = useState<BookSummary | null>(null);
   const [conflict, setConflict] = useState<(DeskConflict & { bookId: string }) | null>(null);
+  const [actionNote, setActionNote] = useState<string | null>(null);
 
   const query = useCallback(
     async (offset: number) => {
@@ -126,6 +127,14 @@ export function Stacks() {
           {scanNote}
         </p>
       )}
+      {actionNote && (
+        <p className="stacks-scan-note" role="alert">
+          {actionNote}
+          <button onClick={() => setActionNote(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </p>
+      )}
 
       <div className="stacks-body">
         <VirtualBookList
@@ -165,9 +174,18 @@ export function Stacks() {
                   void (async () => {
                     const path = await lib.chooseRelinkFile();
                     if (path) {
-                      await lib.relinkBook(selected.id, path);
-                      useLibrary.setState((s) => ({ refreshTick: s.refreshTick + 1 }));
-                      setSelected({ ...selected, missing: false });
+                      try {
+                        await lib.relinkBook(selected.id, path);
+                        useLibrary.setState((s) => ({ refreshTick: s.refreshTick + 1 }));
+                        setSelected({ ...selected, missing: false });
+                        setActionNote(null);
+                      } catch (error) {
+                        setActionNote(
+                          typeof error === "string"
+                            ? error
+                            : "Lectorium could not reconnect that file.",
+                        );
+                      }
                     }
                   })();
                 }}

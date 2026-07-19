@@ -5,7 +5,7 @@ import { inTauri } from "../../services/library";
 import { Recall } from "./Recall";
 import "./commonplace.css";
 
-type View = "entries" | "recall";
+type View = "entries" | "recall" | "vocabulary";
 
 const KIND_LABEL: Record<string, string> = {
   quote: "Quote",
@@ -37,6 +37,7 @@ export function Commonplace() {
   const [kind, setKind] = useState("");
   const [linking, setLinking] = useState<cp.CommonplaceEntry | null>(null);
   const [exportNote, setExportNote] = useState<string | null>(null);
+  const [vocabulary, setVocabulary] = useState<cp.VocabularyEntry[]>([]);
 
   const load = useCallback(() => {
     if (!inTauri()) return;
@@ -57,6 +58,10 @@ export function Commonplace() {
   useEffect(() => {
     if (inTauri()) void cp.listHeadings().then(setHeadings);
   }, [entries.length]);
+
+  useEffect(() => {
+    if (view === "vocabulary" && inTauri()) void cp.listVocabulary().then(setVocabulary);
+  }, [view]);
 
   const byId = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
 
@@ -81,6 +86,41 @@ export function Commonplace() {
 
   if (view === "recall") {
     return <Recall onExit={() => setView("entries")} onOpenBook={openBook} />;
+  }
+
+  if (view === "vocabulary") {
+    return (
+      <main className="commonplace" aria-label="Vocabulary">
+        <header className="cp-bar">
+          <button className="cp-back" onClick={() => setView("entries")}>
+            ← Commonplace
+          </button>
+          <h1>Vocabulary</h1>
+        </header>
+        {vocabulary.length === 0 ? (
+          <div className="cp-empty">
+            <p>No words kept yet.</p>
+          </div>
+        ) : (
+          <ul className="cp-list vocabulary-list">
+            {vocabulary.map((word) => (
+              <li key={word.id} className="cp-entry">
+                <h2>{word.displayedWord}</h2>
+                {word.definition && <p className="cp-note">{word.definition}</p>}
+                <blockquote>{word.sentence}</blockquote>
+                <button
+                  className="cp-source-link"
+                  onClick={() => openBook(word.bookId, word.locatorJson)}
+                >
+                  {word.bookTitle ?? "Open source"}
+                  {word.bookAuthors?.[0] ? `, ${word.bookAuthors[0]}` : ""}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </main>
+    );
   }
 
   return (
@@ -120,6 +160,9 @@ export function Commonplace() {
         <button className="cp-recall" onClick={() => setView("recall")}>
           Recall
         </button>
+        <button className="cp-recall" onClick={() => setView("vocabulary")}>
+          Words
+        </button>
         <button className="cp-export" onClick={doExport}>
           Export
         </button>
@@ -156,7 +199,10 @@ export function Commonplace() {
               )}
               {e.note && <p className="cp-note">{e.note}</p>}
               <div className="cp-source">
-                <button className="cp-source-link" onClick={() => openBook(e.bookId)}>
+                <button
+                  className="cp-source-link"
+                  onClick={() => openBook(e.bookId, e.startLocatorJson)}
+                >
                   {e.bookTitle}
                   {e.bookAuthors[0] ? `, ${e.bookAuthors[0]}` : ""}
                   {e.sectionTitle ? ` · ${e.sectionTitle}` : ""}

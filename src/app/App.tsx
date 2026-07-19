@@ -9,6 +9,7 @@ import { Room } from "../spaces/room/Room";
 import { Reader } from "../spaces/reader/Reader";
 import { Stacks } from "../spaces/stacks/Stacks";
 import { Commonplace } from "../spaces/commonplace/Commonplace";
+import { useQuietNight } from "../config/useQuietNight";
 import "./app.css";
 
 export function App() {
@@ -16,6 +17,7 @@ export function App() {
   const goTo = useNavigation((s) => s.goTo);
   const { settings, bootstrap } = useLibrary();
   const [ready, setReady] = useState(false);
+  const quietNight = useQuietNight(settings.bedtime);
 
   useEffect(() => {
     // Ember is painted before this runs (base.css fallbacks), so startup
@@ -24,8 +26,8 @@ export function App() {
   }, [bootstrap]);
 
   useEffect(() => {
-    applyTheme(settings.theme);
-  }, [settings.theme]);
+    applyTheme(quietNight ? "ember" : settings.theme);
+  }, [quietNight, settings.theme]);
 
   if (!ready) {
     // quiet dark surface while settings load; no spinner, no flash

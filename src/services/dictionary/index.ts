@@ -9,8 +9,11 @@
 
 export interface Definition {
   word: string;
+  /** canonical dictionary lemma when an inflected form was selected */
+  headword: string;
   /** one concise, context-appropriate sense — never a page of senses */
   sense: string;
+  partOfSpeech: "noun" | "verb" | "adjective" | "adverb" | null;
   pronunciation: string | null;
   source: string;
 }
@@ -18,10 +21,13 @@ export interface Definition {
 export interface DictionaryAdapter {
   name: string;
   available(): Promise<boolean>;
-  define(word: string): Promise<Definition | null>;
+  define(word: string, context: string): Promise<Definition | null>;
 }
 
 import { offlineDictionary } from "./offline";
+import { normalizeDictionaryTerm } from "./lookup";
+
+export { dictionaryContext, dictionaryTermFromSelection, normalizeDictionaryTerm } from "./lookup";
 
 const adapters: DictionaryAdapter[] = [offlineDictionary];
 
@@ -31,16 +37,13 @@ export interface DefineResult {
   message: string | null;
 }
 
-export async function define(rawWord: string): Promise<DefineResult> {
-  const word = rawWord
-    .trim()
-    .toLowerCase()
-    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+export async function define(rawWord: string, context = ""): Promise<DefineResult> {
+  const word = normalizeDictionaryTerm(rawWord);
   if (!word) return { definition: null, message: null };
   for (const adapter of adapters) {
     try {
       if (await adapter.available()) {
-        const definition = await adapter.define(word);
+        const definition = await adapter.define(word, context);
         if (definition) return { definition, message: null };
       }
     } catch {
@@ -49,6 +52,8 @@ export async function define(rawWord: string): Promise<DefineResult> {
   }
   return {
     definition: null,
-    message: "No definition here yet. An offline dictionary can be added in Settings later.",
+    message: /\p{Script=Latin}/u.test(word)
+      ? "No offline English definition was found."
+      : "The bundled dictionary currently covers English words.",
   };
 }

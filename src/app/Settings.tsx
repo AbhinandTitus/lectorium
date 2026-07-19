@@ -8,12 +8,13 @@ import "./settings.css";
 
 /**
  * Settings sheet (docs/PRODUCT.md — Settings is a sheet, not a fifth
- * destination). Data safety, night behavior, and reminders live here.
+ * destination). Data safety and night behavior live here.
  */
 export function Settings({ onClose }: { onClose: () => void }) {
   const { settings, updateSettings } = useLibrary();
   const [backups, setBackups] = useState<data.BackupInfo[]>([]);
   const [note, setNote] = useState<string | null>(null);
+  const [restoreCandidate, setRestoreCandidate] = useState<data.BackupInfo | null>(null);
 
   useEffect(() => {
     void data.listBackups().then(setBackups);
@@ -44,23 +45,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
           </label>
           <p className="settings-hint">
             During the wind-down hour before this time, {identity.name} enters Quiet Night: warm and
-            dark, decorative motion frozen, Recall deferred. For the lowest sleep impact, use paper
-            or e-ink near bedtime and keep a dim warm lamp with low hardware brightness.
+            dark, with decorative motion frozen. For the lowest sleep impact, use paper or e-ink
+            near bedtime and keep a dim warm lamp with low hardware brightness.
           </p>
-        </section>
-
-        <section>
-          <h3>Reminder</h3>
-          <label className="settings-row">
-            <span>One quiet cue time</span>
-            <input
-              type="time"
-              value={settings.reminderTime ?? ""}
-              onChange={(e) => void updateSettings({ reminderTime: e.target.value || null })}
-              aria-label="Reminder time"
-            />
-          </label>
-          <p className="settings-hint">“The room is ready.” Optional, once a day, no streaks.</p>
         </section>
 
         <section>
@@ -123,26 +110,35 @@ export function Settings({ onClose }: { onClose: () => void }) {
               <ul>
                 {backups.slice(0, 6).map((b) => (
                   <li key={b.path}>
-                    <button
-                      onClick={() => {
-                        if (
-                          inTauri() &&
-                          window.confirm(
-                            "Restore this backup? Your current library data will be backed up first, then replaced.",
-                          )
-                        ) {
-                          void data.restoreBackup(b.path).then(() => {
-                            setNote("Restored. Reopen a book to continue.");
-                            void useLibrary.getState().bootstrap();
-                          });
-                        }
-                      }}
-                    >
+                    <button onClick={() => inTauri() && setRestoreCandidate(b)}>
                       {b.name} · {(b.bytes / 1024).toFixed(0)} KB
                     </button>
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+          {restoreCandidate && (
+            <div className="settings-confirm" role="alertdialog" aria-modal="true">
+              <p>
+                Restore <strong>{restoreCandidate.name}</strong>? Your current data will be backed
+                up first, then replaced.
+              </p>
+              <div>
+                <button onClick={() => setRestoreCandidate(null)}>Cancel</button>
+                <button
+                  onClick={() => {
+                    const candidate = restoreCandidate;
+                    setRestoreCandidate(null);
+                    void data.restoreBackup(candidate.path).then(() => {
+                      setNote("Restored. Reopen a book to continue.");
+                      void useLibrary.getState().bootstrap();
+                    });
+                  }}
+                >
+                  Restore backup
+                </button>
+              </div>
             </div>
           )}
         </section>

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { identity } from "../config/identity";
 import { applyTheme, type ThemeName } from "../config/tokens";
 import * as lib from "../services/library";
 import { useLibrary } from "../state/library";
 import "./onboarding.css";
+import type { BookSummary } from "../services/types";
 
 /**
  * Three screens, every optional step skippable. No calibration, no goals,
@@ -13,6 +14,34 @@ export function Onboarding() {
   const { updateSettings, settings } = useLibrary();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [folderChosen, setFolderChosen] = useState(false);
+  const [books, setBooks] = useState<BookSummary[]>([]);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (step !== 2 || !lib.inTauri()) return;
+    let disposed = false;
+    const load = () => {
+      void lib.listBooks({ limit: 100 }).then((items) => {
+        if (!disposed) setBooks(items.filter((book) => !book.missing));
+      });
+    };
+    load();
+    const timer = window.setInterval(load, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [step]);
+
+  const choices = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return books;
+    return books.filter(
+      (book) =>
+        book.title.toLocaleLowerCase().includes(query) ||
+        book.authors.some((author) => author.toLocaleLowerCase().includes(query)),
+    );
+  }, [books, search]);
 
   const finish = async (theme: ThemeName) => {
     applyTheme(theme);
@@ -56,14 +85,37 @@ export function Onboarding() {
             <p>
               Choose the book you most want to return to — not the book you think you should read.
               {folderChosen &&
-                " The shelves are filling in the background; you can pick now or later."}
+                " The shelves are filling in the background; new books appear here as they are found."}
             </p>
+            {books.length > 0 && (
+              <>
+                <input
+                  className="onboarding-search"
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Find a title or author"
+                  aria-label="Find a book for the desk"
+                />
+                <ul className="onboarding-books">
+                  {choices.slice(0, 8).map((book) => (
+                    <li key={book.id}>
+                      <button
+                        onClick={() => {
+                          void lib.setDeskRole(book.id, "current", true).then(() => setStep(3));
+                        }}
+                      >
+                        <strong>{book.title}</strong>
+                        {book.authors[0] && <span>{book.authors[0]}</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <div className="onboarding-actions">
-              <button className="onboarding-primary" onClick={() => setStep(3)}>
-                I’ll pick from the Stacks
-              </button>
               <button className="onboarding-skip" onClick={() => setStep(3)}>
-                Later
+                Continue without choosing
               </button>
             </div>
           </>

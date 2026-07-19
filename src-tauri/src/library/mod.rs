@@ -12,9 +12,9 @@ pub fn classify(ext: &str) -> Option<(&'static str, &'static str)> {
         "txt" => Some(("txt", "text")),
         "md" | "markdown" => Some(("md", "text")),
         "html" | "htm" | "xhtml" => Some(("html", "text")),
-        // Secondary import formats: listed, but need explicit Calibre conversion.
-        "mobi" => Some(("mobi", "epub")),
-        "azw3" => Some(("azw3", "epub")),
+        // MOBI/AZW3 are not EPUB containers. They stay out of the readable
+        // library until an explicit, sandboxed conversion adapter exists.
+        "mobi" | "azw3" => None,
         _ => None,
     }
 }

@@ -3,7 +3,8 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from "pdf
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { ThemeName } from "../../../config/tokens";
 import { stackFor, type TypographySettings } from "../../../config/typography";
-import type { LocatorEnvelope, TextQuote } from "../locator";
+import { sentenceAroundSelection } from "../../../lib/selectionContext";
+import { excerptAround, quoteContext, type LocatorEnvelope, type TextQuote } from "../locator";
 import { analyzeReflow, type ReflowResult } from "./pdfReflow";
 import type {
   EngineAnnotation,
@@ -87,7 +88,12 @@ export class PdfEngine implements ReaderEngine {
     const range = sel.getRangeAt(0);
     const rect = range.getBoundingClientRect();
     const pageRect = this.pageWrap!.getBoundingClientRect();
-    const quote: TextQuote = { exact: text, prefix: "", suffix: "" };
+    const before = range.cloneRange();
+    before.selectNodeContents(this.textLayerDiv);
+    before.setEnd(range.startContainer, range.startOffset);
+    const fullText = this.textLayerDiv.textContent ?? "";
+    const startOffset = before.toString().length;
+    const quote: TextQuote = quoteContext(fullText, startOffset, startOffset + text.length);
     const envelope: LocatorEnvelope = {
       v: 1,
       engine: "pdf",
@@ -102,6 +108,11 @@ export class PdfEngine implements ReaderEngine {
     };
     this.selectionHandler({
       text,
+      context: sentenceAroundSelection(
+        fullText.slice(0, startOffset),
+        text,
+        fullText.slice(startOffset + text.length),
+      ),
       locator: envelope,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     });
@@ -408,11 +419,9 @@ export class PdfEngine implements ReaderEngine {
       let from = 0;
       let at = lower.indexOf(needle, from);
       while (at !== -1 && hits.length < 200) {
-        const start = Math.max(0, at - 40);
-        const end = Math.min(text.length, at + needle.length + 40);
         hits.push({
           target: `page:${i}`,
-          excerpt: `…${text.slice(start, end)}…`,
+          excerpt: excerptAround(text, at, needle.length),
           sectionTitle: `Page ${this.pageLabels?.[i] ?? i + 1}`,
         });
         from = at + needle.length;

@@ -1,0 +1,117 @@
+{
+  "format": 1,
+  "name": "Princeton WordNet",
+  "version": "3.1",
+  "entries": 147478,
+  "shards": {
+    "a": {
+      "entries": 10100,
+      "bytes": 1344030
+    },
+    "b": {
+      "entries": 8563,
+      "bytes": 1138420
+    },
+    "c": {
+      "entries": 14199,
+      "bytes": 1961472
+    },
+    "d": {
+      "entries": 6907,
+      "bytes": 933900
+    },
+    "e": {
+      "entries": 5242,
+      "bytes": 714857
+    },
+    "f": {
+      "entries": 6902,
+      "bytes": 912366
+    },
+    "g": {
+      "entries": 8805,
+      "bytes": 1038039
+    },
+    "h": {
+      "entries": 5808,
+      "bytes": 779112
+    },
+    "i": {
+      "entries": 4482,
+      "bytes": 597646
+    },
+    "j": {
+      "entries": 1775,
+      "bytes": 257746
+    },
+    "k": {
+      "entries": 1591,
+      "bytes": 225954
+    },
+    "l": {
+      "entries": 5610,
+      "bytes": 740946
+    },
+    "m": {
+      "entries": 8094,
+      "bytes": 1093477
+    },
+    "n": {
+      "entries": 3514,
+      "bytes": 453772
+    },
+    "o": {
+      "entries": 3715,
+      "bytes": 463546
+    },
+    "other": {
+      "entries": 333,
+      "bytes": 34916
+    },
+    "p": {
+      "entries": 11443,
+      "bytes": 1548992
+    },
+    "q": {
+      "entries": 567,
+      "bytes": 83284
+    },
+    "r": {
+      "entries": 6118,
+      "bytes": 871714
+    },
+    "s": {
+      "entries": 15853,
+      "bytes": 2167634
+    },
+    "t": {
+      "entries": 7330,
+      "bytes": 982927
+    },
+    "u": {
+      "entries": 3287,
+      "bytes": 355639
+    },
+    "v": {
+      "entries": 2342,
+      "bytes": 317369
+    },
+    "w": {
+      "entries": 3793,
+      "bytes": 526696
+    },
+    "x": {
+      "entries": 196,
+      "bytes": 25399
+    },
+    "y": {
+      "entries": 512,
+      "bytes": 71888
+    },
+    "z": {
+      "entries": 397,
+      "bytes": 53235
+    }
+  },
+  "license": "LICENSE-WordNet.txt"
+}

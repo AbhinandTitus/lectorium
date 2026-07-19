@@ -56,10 +56,49 @@
 }
 
 .reader-stage {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: flex;
   min-height: 0;
   align-items: stretch;
+}
+
+/* One quiet indication of place in the whole book. It remains visible when
+   the controls fade, but is too small and low-contrast to compete with text. */
+.reading-progress {
+  position: absolute;
+  left: 50%;
+  bottom: 0.65rem;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transform: translateX(-50%);
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.reading-progress-track {
+  width: min(7rem, 24vw);
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--color-hairline);
+}
+
+.reading-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+}
+
+.reading-progress-label {
+  min-width: 2.2rem;
 }
 
 .reader-page-host {
@@ -180,6 +219,16 @@
   transition: transform 150ms ease;
 }
 
+.text-engine-flow blockquote,
+.text-engine-flow aside,
+.text-engine-flow .book-callout {
+  margin-block: 1.25em;
+  padding: 0.85em 1em;
+  background: var(--color-raised);
+  border-inline-start: 0.2rem solid var(--color-accent);
+  border-radius: var(--radius-small);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .text-engine-flow {
     transition: none;
@@ -280,6 +329,21 @@
   justify-content: center;
   gap: 1rem;
   color: var(--color-text-secondary);
+}
+
+.reader-save-note {
+  position: absolute;
+  z-index: 12;
+  inset-block-start: 4.5rem;
+  inset-inline-start: 50%;
+  max-width: min(34rem, calc(100% - 2rem));
+  margin: 0;
+  padding: 0.55rem 0.9rem;
+  color: var(--color-text-primary);
+  background: var(--color-raised);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-small);
+  transform: translateX(-50%);
 }
 
 .reader-error button {
@@ -446,6 +510,44 @@
   font-size: 0.85rem;
 }
 
+.annotation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0 0.8rem 1rem;
+  list-style: none;
+}
+
+.annotation-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.annotation-open {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.7rem 0.2rem;
+  text-align: start;
+}
+
+.annotation-open span:first-child,
+.annotation-open small {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.annotation-delete {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
 .toc-list,
 .search-hits {
   flex: 1;
@@ -488,7 +590,8 @@
 /* ---------- note sheet + study prompt ---------- */
 
 .note-sheet,
-.study-prompt {
+.study-prompt,
+.external-link-sheet {
   position: absolute;
   bottom: 2rem;
   left: 50%;
@@ -503,6 +606,27 @@
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-large);
   box-shadow: 0 10px 30px rgb(0 0 0 / 40%);
+}
+
+.external-link-sheet h2,
+.external-link-sheet p {
+  margin: 0;
+}
+
+.external-link-address {
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+}
+
+.external-link-sheet > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.8rem;
+}
+
+.external-link-sheet > div button:last-child {
+  color: var(--color-accent);
 }
 
 .note-sheet blockquote {
@@ -575,6 +699,12 @@
 .define-pron {
   font-weight: 400;
   color: var(--color-text-secondary);
+}
+
+.define-meta {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
 }
 
 .define-keep {
