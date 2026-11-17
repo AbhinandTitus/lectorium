@@ -76,7 +76,15 @@ export function Reader() {
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [ribbon, setRibbon] = useState<{ title: string; section: string | null } | null>(null);
   const [sectionTitle, setSectionTitle] = useState<string | null>(null);
-  const [fontDelta, setFontDelta] = useState(0);
+  const fontDelta = settings.fontDelta;
+  const setFontDelta = useCallback(
+    (next: (current: number) => number) => {
+      const current = useLibrary.getState().settings.fontDelta;
+      const value = Math.max(-8, Math.min(12, next(current)));
+      if (value !== current) void updateSettings({ fontDelta: value });
+    },
+    [updateSettings],
+  );
   const [selection, setSelection] = useState<EngineSelection | null>(null);
   const [noteDraft, setNoteDraft] = useState<{ selection: EngineSelection; keep: boolean } | null>(
     null,
@@ -301,6 +309,7 @@ export function Reader() {
           typography,
           theme: effectiveTheme,
           publisherStyles: settings.epubPublisherStyles,
+          pdf: { colors: settings.pdfColors, fit: settings.pdfFit },
           onLocatorChanged,
         });
         if (disposed) {
@@ -346,6 +355,12 @@ export function Reader() {
   useEffect(() => {
     engineRef.current?.applyPublisherStyles?.(settings.epubPublisherStyles);
   }, [settings.epubPublisherStyles]);
+  useEffect(() => {
+    engineRef.current?.applyPdfPresentation?.({
+      colors: settings.pdfColors,
+      fit: settings.pdfFit,
+    });
+  }, [settings.pdfColors, settings.pdfFit]);
 
   // flush the save on blur / hide / close
   useEffect(() => {
@@ -454,6 +469,8 @@ export function Reader() {
     (deltaY: number) => {
       if (pdfView === "reflow") return;
       if (Math.abs(deltaY) < 4) return;
+      // a fit-width PDF page scrolls first and turns only at its edge
+      if (engineRef.current?.consumesWheel?.(deltaY)) return;
       const now = Date.now();
       if (now - lastFlip.current < 380) return;
       lastFlip.current = now;
@@ -641,19 +658,19 @@ export function Reader() {
         case "+":
         case "=":
           if (e.ctrlKey) {
-            setFontDelta((d) => Math.min(d + 1, FONT_SIZE_MAX));
+            setFontDelta((d) => d + 1);
             e.preventDefault();
           }
           break;
         case "-":
           if (e.ctrlKey) {
-            setFontDelta((d) => Math.max(d - 1, -FONT_SIZE_MAX));
+            setFontDelta((d) => d - 1);
             e.preventDefault();
           }
           break;
         case "0":
           if (e.ctrlKey) {
-            setFontDelta(0);
+            setFontDelta(() => 0);
             e.preventDefault();
           }
           break;
@@ -672,6 +689,7 @@ export function Reader() {
     addBookmark,
     isFullscreen,
     setReaderFullscreen,
+    setFontDelta,
   ]);
 
   if (!bookId) {

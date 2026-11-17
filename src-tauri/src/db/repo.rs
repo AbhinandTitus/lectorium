@@ -58,6 +58,8 @@ pub struct BookQuery {
     pub search: Option<String>,
     pub status: Option<String>,
     pub format: Option<String>,
+    /// "drive": only books mirrored from the Google Drive shelf
+    pub source: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -141,6 +143,9 @@ pub fn list_books(conn: &Connection, q: &BookQuery) -> Result<Vec<BookSummary>, 
     if let Some(format) = q.format.as_deref().filter(|s| !s.is_empty()) {
         args.push(Box::new(format.to_string()));
         sql.push_str(&format!(" AND source_format = ?{}", args.len()));
+    }
+    if q.source.as_deref() == Some("drive") {
+        sql.push_str(" AND canonical_path IN (SELECT local_path FROM drive_files)");
     }
     sql.push_str(" ORDER BY title COLLATE NOCASE");
     sql.push_str(&format!(
@@ -1485,6 +1490,355 @@ pub fn save_settings(conn: &Connection, version: i64, json: &str) -> Result<(), 
          ON CONFLICT(id) DO UPDATE SET version = excluded.version, json = excluded.json",
         params![version, json],
     )?;
+    Ok(())
+}
+
+// ---- key/value facts owned by Rust (connector state; never secrets) ----
+
+pub fn kv_get(conn: &Connection, key: &str) -> Result<Option<String>, AppError> {
+    Ok(conn
+        .query_row("SELECT value FROM app_kv WHERE key = ?1", [key], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+pub fn kv_set(conn: &Connection, key: &str, value: &str) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO app_kv (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+// ---- Google Drive shelf ----
+
+#[derive(Debug, Clone)]
+pub struct DriveFileRow {
+    pub md5: Option<String>,
+    pub local_path: String,
+}
+
+pub fn drive_file(conn: &Connection, file_id: &str) -> Result<Option<DriveFileRow>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT md5, local_path FROM drive_files WHERE file_id = ?1",
+            [file_id],
+            |r| {
+                Ok(DriveFileRow {
+                    md5: r.get(0)?,
+                    local_path: r.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// Does another Drive file already own this local path?
+pub fn drive_path_owner(conn: &Connection, local_path: &str) -> Result<Option<String>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT file_id FROM drive_files WHERE local_path = ?1",
+            [local_path],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn drive_upsert_file(
+    conn: &Connection,
+    file_id: &str,
+    name: &str,
+    md5: Option<&str>,
+    modified_time: Option<&str>,
+    size_bytes: Option<i64>,
+    local_path: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO drive_files (file_id, name, md5, modified_time, size_bytes, local_path, in_drive)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+         ON CONFLICT(file_id) DO UPDATE SET
+             name = excluded.name, md5 = excluded.md5,
+             modified_time = excluded.modified_time, size_bytes = excluded.size_bytes,
+             local_path = excluded.local_path, in_drive = 1,
+             synced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        params![file_id, name, md5, modified_time, size_bytes, local_path],
+    )?;
+    Ok(())
+}
+
+/// Mark every mirrored file not in `present` as gone from Drive. The local
+/// copy and all reading data stay. Returns how many were newly marked.
+pub fn drive_mark_absent(conn: &Connection, present: &[String]) -> Result<usize, AppError> {
+    let mut stmt = conn.prepare("SELECT file_id FROM drive_files WHERE in_drive = 1")?;
+    let known: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut marked = 0;
+    for id in known {
+        if !present.contains(&id) {
+            conn.execute(
+                "UPDATE drive_files SET in_drive = 0 WHERE file_id = ?1",
+                [&id],
+            )?;
+            marked += 1;
+        }
+    }
+    for id in present {
+        conn.execute(
+            "UPDATE drive_files SET in_drive = 1 WHERE file_id = ?1",
+            [id],
+        )?;
+    }
+    Ok(marked)
+}
+
+pub fn drive_file_count(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row("SELECT count(*) FROM drive_files", [], |r| r.get(0))?)
+}
+
+// ---- book text index (local; rebuildable) ----
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSection {
+    pub index: i64,
+    pub title: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextIndexStatus {
+    pub chapter_count: i64,
+    pub total_chars: i64,
+}
+
+pub fn text_index_status(
+    conn: &Connection,
+    book_id: &str,
+) -> Result<Option<TextIndexStatus>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT chapter_count, total_chars FROM book_text_index WHERE book_id = ?1",
+            [book_id],
+            |r| {
+                Ok(TextIndexStatus {
+                    chapter_count: r.get(0)?,
+                    total_chars: r.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// Replace a book's text index with freshly cut passages.
+/// `chunks` are (chapter_index, chapter_title, seq, char_start, text).
+pub fn replace_text_index(
+    conn: &Connection,
+    book_id: &str,
+    chapter_count: i64,
+    total_chars: i64,
+    chunks: &[(i64, Option<String>, i64, i64, String)],
+) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM book_chunks WHERE book_id = ?1", [book_id])?;
+    {
+        let mut insert = tx.prepare(
+            "INSERT INTO book_chunks (book_id, chapter_index, chapter_title, seq, char_start, text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for (chapter_index, title, seq, char_start, text) in chunks {
+            insert.execute(params![
+                book_id,
+                chapter_index,
+                title,
+                seq,
+                char_start,
+                text
+            ])?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO book_text_index (book_id, chapter_count, total_chars) VALUES (?1, ?2, ?3)
+         ON CONFLICT(book_id) DO UPDATE SET chapter_count = excluded.chapter_count,
+             total_chars = excluded.total_chars,
+             indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        params![book_id, chapter_count, total_chars],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Passage {
+    pub chapter_index: i64,
+    pub chapter_title: Option<String>,
+    pub seq: i64,
+    pub char_start: i64,
+    pub text: String,
+}
+
+fn row_to_passage(r: &Row) -> rusqlite::Result<Passage> {
+    Ok(Passage {
+        chapter_index: r.get(0)?,
+        chapter_title: r.get(1)?,
+        seq: r.get(2)?,
+        char_start: r.get(3)?,
+        text: r.get(4)?,
+    })
+}
+
+/// A chapter's passages in reading order.
+pub fn chapter_passages(
+    conn: &Connection,
+    book_id: &str,
+    chapter_index: i64,
+) -> Result<Vec<Passage>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT chapter_index, chapter_title, seq, char_start, text FROM book_chunks
+         WHERE book_id = ?1 AND chapter_index = ?2 ORDER BY seq",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id, chapter_index], row_to_passage)?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// Total characters of a chapter's text.
+pub fn chapter_chars(
+    conn: &Connection,
+    book_id: &str,
+    chapter_index: i64,
+) -> Result<i64, AppError> {
+    Ok(conn.query_row(
+        "SELECT coalesce(max(char_start + length(text)), 0) FROM book_chunks
+         WHERE book_id = ?1 AND chapter_index = ?2",
+        params![book_id, chapter_index],
+        |r| r.get(0),
+    )?)
+}
+
+/// Best-matching passages for an FTS query, restricted to what the reader
+/// has already read: every chapter before `chapter_index`, and the current
+/// chapter up to `char_limit`.
+pub fn search_read_passages(
+    conn: &Connection,
+    book_id: &str,
+    match_query: &str,
+    chapter_index: i64,
+    char_limit: i64,
+    limit: i64,
+) -> Result<Vec<Passage>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT c.chapter_index, c.chapter_title, c.seq, c.char_start, c.text
+         FROM book_chunks_fts f JOIN book_chunks c ON c.id = f.rowid
+         WHERE book_chunks_fts MATCH ?1 AND c.book_id = ?2
+           AND (c.chapter_index < ?3 OR (c.chapter_index = ?3 AND c.char_start < ?4))
+         ORDER BY bm25(book_chunks_fts) LIMIT ?5",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![match_query, book_id, chapter_index, char_limit, limit],
+            row_to_passage,
+        )?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+// ---- companion notes (generated; kept apart from the reader's own) ----
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionNote {
+    pub id: String,
+    pub book_id: String,
+    pub kind: String,
+    pub chapter_index: i64,
+    pub chapter_title: Option<String>,
+    pub read_fraction: f64,
+    pub body_json: String,
+    pub model: String,
+    pub created_at: String,
+}
+
+fn row_to_note(r: &Row) -> rusqlite::Result<CompanionNote> {
+    Ok(CompanionNote {
+        id: r.get(0)?,
+        book_id: r.get(1)?,
+        kind: r.get(2)?,
+        chapter_index: r.get(3)?,
+        chapter_title: r.get(4)?,
+        read_fraction: r.get(5)?,
+        body_json: r.get(6)?,
+        model: r.get(7)?,
+        created_at: r.get(8)?,
+    })
+}
+
+const NOTE_COLS: &str = "id, book_id, kind, chapter_index, chapter_title, read_fraction,
+                         body_json, model, created_at";
+
+#[allow(clippy::too_many_arguments)]
+pub fn save_companion_note(
+    conn: &Connection,
+    book_id: &str,
+    kind: &str,
+    chapter_index: i64,
+    chapter_title: Option<&str>,
+    read_fraction: f64,
+    body_json: &str,
+    model: &str,
+) -> Result<CompanionNote, AppError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO companion_notes
+            (id, book_id, kind, chapter_index, chapter_title, read_fraction, body_json, model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(book_id, kind, chapter_index) DO UPDATE SET
+             chapter_title = excluded.chapter_title, read_fraction = excluded.read_fraction,
+             body_json = excluded.body_json, model = excluded.model,
+             created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        params![
+            id,
+            book_id,
+            kind,
+            chapter_index,
+            chapter_title,
+            read_fraction,
+            body_json,
+            model
+        ],
+    )?;
+    Ok(conn.query_row(
+        &format!(
+            "SELECT {NOTE_COLS} FROM companion_notes
+             WHERE book_id = ?1 AND kind = ?2 AND chapter_index = ?3"
+        ),
+        params![book_id, kind, chapter_index],
+        row_to_note,
+    )?)
+}
+
+pub fn list_companion_notes(
+    conn: &Connection,
+    book_id: &str,
+) -> Result<Vec<CompanionNote>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM companion_notes WHERE book_id = ?1
+         ORDER BY chapter_index, kind"
+    ))?;
+    let rows = stmt
+        .query_map([book_id], row_to_note)?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+pub fn delete_companion_note(conn: &Connection, id: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM companion_notes WHERE id = ?1", [id])?;
     Ok(())
 }
 

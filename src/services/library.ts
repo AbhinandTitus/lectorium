@@ -128,6 +128,12 @@ export interface StoredSettings {
   reminderTime: string | null;
   /** preserve publisher CSS in EPUBs while using the Paper theme */
   epubPublisherStyles: boolean;
+  /** reader text-size adjustment in px, relative to the preset */
+  fontDelta: number;
+  /** PDF pages mapped onto the reading theme, or left as authored */
+  pdfColors: "themed" | "original";
+  /** PDF page fitted whole, or to the width of the reading column */
+  pdfFit: "page" | "width";
 }
 
 export const defaultSettings: StoredSettings = {
@@ -142,6 +148,9 @@ export const defaultSettings: StoredSettings = {
   bedtime: null,
   reminderTime: null,
   epubPublisherStyles: false,
+  fontDelta: 0,
+  pdfColors: "themed",
+  pdfFit: "page",
 };
 
 export async function loadSettings(): Promise<StoredSettings> {

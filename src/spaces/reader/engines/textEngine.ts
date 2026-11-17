@@ -3,8 +3,10 @@ import type { ThemeName } from "../../../config/tokens";
 import { stackFor, type TypographySettings } from "../../../config/typography";
 import { sentenceAroundSelection } from "../../../lib/selectionContext";
 import { fetchBookText } from "../../../services/bookData";
-import { excerptAround, quoteContext, type LocatorEnvelope } from "../locator";
+import { excerptAround, quoteContext, takeGraphemes, type LocatorEnvelope } from "../locator";
 import type {
+  BookTextSection,
+  ChapterPosition,
   EngineAnnotation,
   EngineOpenArgs,
   EngineSelection,
@@ -13,6 +15,27 @@ import type {
   SearchHit,
   TocEntry,
 } from "./types";
+
+const COLUMN_GAP = 64;
+
+interface TextPosition {
+  blockIndex: number;
+  charOffset: number;
+}
+
+/**
+ * Saved web pages often wrap the whole text in one or two container
+ * elements. Lift their children up so paragraphs and headings are the
+ * blocks the reader navigates by, not one book-sized block.
+ */
+function unwrapSoleContainers(flow: HTMLElement): void {
+  for (let depth = 0; depth < 6; depth++) {
+    if (flow.children.length !== 1) return;
+    const only = flow.children[0];
+    if (!/^(DIV|SECTION|ARTICLE|MAIN)$/.test(only.tagName) || only.children.length === 0) return;
+    only.replaceWith(...Array.from(only.childNodes));
+  }
+}
 
 /**
  * Reflowable text engine for TXT / Markdown / simple HTML. Content is
@@ -28,6 +51,16 @@ export class TextEngine implements ReaderEngine {
   private pageIndex = 0;
   private pageCount = 1;
   private blocks: HTMLElement[] = [];
+  /** the passage at the top of the page; what a reflow must return to */
+  private position: TextPosition = { blockIndex: 0, charOffset: 0 };
+  /** a displayed target, held until the reader turns a page themselves */
+  private anchor: TextPosition | null = null;
+  /** nothing is announced (or autosaved) before the first display */
+  private displayed = false;
+  private fontListener: (() => void) | null = null;
+  private chapters: { start: number; end: number; title: string | null }[] = [];
+  private blockOffsets: number[] = [];
+  private totalChars = 0;
   private resizeObserver: ResizeObserver | null = null;
   private language: string | null = null;
   private selectionHandler: ((sel: EngineSelection | null) => void) | null = null;
@@ -65,29 +98,53 @@ export class TextEngine implements ReaderEngine {
     };
     this.flow.addEventListener("click", this.linkListener);
 
+    unwrapSoleContainers(this.flow);
     this.blocks = Array.from(this.flow.children) as HTMLElement[];
+    this.buildChapters();
     this.applyTypography(args.typography);
 
     this.resizeObserver = new ResizeObserver(() => this.reflow());
     this.resizeObserver.observe(this.container);
+    // A web font arriving after the first layout re-wraps every line; hold
+    // the passage through it instead of the page number.
+    this.fontListener = () => this.reflow();
+    document.fonts?.addEventListener?.("loadingdone", this.fontListener);
   }
 
   /** Recompute column pagination after size/typography changes. */
-  private reflow(keepBlock?: number): void {
+  private reflow(keep?: TextPosition): void {
     if (!this.page || !this.flow || !this.container) return;
-    const anchorBlock = keepBlock ?? this.firstVisibleBlock();
+    // Hold the passage, not the block: a block can run for many pages, and
+    // returning to its first line is how a reader gets thrown backwards.
+    if (keep) this.anchor = keep;
+    const anchor = this.anchor ?? this.position;
     const w = this.page.clientWidth;
     this.flow.style.columnWidth = `${w}px`;
-    this.flow.style.columnGap = "64px";
-    this.pageCount = Math.max(1, Math.round((this.flow.scrollWidth + 64) / (w + 64)));
-    this.goToBlock(anchorBlock);
+    this.flow.style.columnGap = `${COLUMN_GAP}px`;
+    this.pageCount = Math.max(
+      1,
+      Math.round((this.flow.scrollWidth + COLUMN_GAP) / (w + COLUMN_GAP)),
+    );
+    this.setPage(this.pageOfPosition(anchor), false);
   }
 
-  private firstVisibleBlock(): number {
-    return this.firstVisiblePosition().blockIndex;
+  private pageWidth(): number {
+    return (this.page?.clientWidth ?? 0) + COLUMN_GAP;
   }
 
-  private firstVisiblePosition(): { blockIndex: number; charOffset: number } {
+  /** The flow's real horizontal offset right now, even mid-animation. */
+  private visualOffset(): number {
+    if (!this.flow) return 0;
+    const transform = getComputedStyle(this.flow).transform;
+    if (!transform || transform === "none") return 0;
+    try {
+      return -new DOMMatrixReadOnly(transform).m41;
+    } catch {
+      return this.pageIndex * this.pageWidth();
+    }
+  }
+
+  private firstVisiblePosition(): TextPosition {
     if (!this.page) return { blockIndex: 0, charOffset: 0 };
     const pageRect = this.page.getBoundingClientRect();
     const doc = this.page.ownerDocument as Document & {
@@ -104,57 +161,87 @@ export class TextEngine implements ReaderEngine {
       before.setEnd(node, caret.startOffset);
       return { blockIndex, charOffset: before.toString().length };
     }
-    const pageLeft = this.pageIndex * (this.page.clientWidth + 64);
     for (let i = 0; i < this.blocks.length; i++) {
       const rects = Array.from(this.blocks[i].getClientRects());
       if (rects.some((rect) => rect.right > pageRect.left && rect.left < pageRect.right)) {
         return { blockIndex: i, charOffset: 0 };
       }
-      if (this.blocks[i].offsetLeft >= pageLeft - 8) return { blockIndex: i, charOffset: 0 };
     }
     return { blockIndex: 0, charOffset: 0 };
   }
 
-  private goToBlock(blockIndex: number): void {
-    if (!this.page) return;
-    const block = this.blocks[Math.min(blockIndex, this.blocks.length - 1)];
-    const pageWidth = this.page.clientWidth + 64;
-    this.pageIndex = block ? Math.max(0, Math.round(block.offsetLeft / pageWidth)) : 0;
-    this.applyTransform();
-    this.announce();
-  }
-
-  private goToPosition(blockIndex: number, charOffset: number): void {
-    this.goToBlock(blockIndex);
-    if (!this.page) return;
-    const block = this.blocks[Math.min(blockIndex, this.blocks.length - 1)];
-    const caret = block ? collapsedRangeAt(block, charOffset) : null;
-    if (!caret) return;
-    const pageWidth = this.page.clientWidth + 64;
-    const currentOffset = this.pageIndex * pageWidth;
-    const rect = caret.getBoundingClientRect();
+  /** Which page a position falls on in the current layout. */
+  private pageOfPosition(position: TextPosition): number {
+    if (!this.page || this.blocks.length === 0) return 0;
+    const block = this.blocks[Math.min(position.blockIndex, this.blocks.length - 1)];
+    const width = this.pageWidth();
+    if (!block || width <= 0) return 0;
     const pageRect = this.page.getBoundingClientRect();
-    const logicalLeft = rect.left - pageRect.left + currentOffset;
-    this.pageIndex = Math.max(0, Math.min(this.pageCount - 1, Math.floor(logicalLeft / pageWidth)));
-    this.applyTransform();
-    this.announce();
+    let rect: DOMRect | undefined;
+    const caret = collapsedRangeAt(block, position.charOffset);
+    if (caret) {
+      const node = caret.startContainer as Text;
+      if (caret.startOffset < node.data.length) caret.setEnd(node, caret.startOffset + 1);
+      rect = caret.getClientRects()[0];
+    }
+    rect ??= block.getClientRects()[0];
+    if (!rect) return 0;
+    const logicalLeft = rect.left - pageRect.left + this.visualOffset();
+    return Math.max(0, Math.min(this.pageCount - 1, Math.floor((logicalLeft + 1) / width)));
   }
 
-  private applyTransform(): void {
-    if (!this.flow || !this.page) return;
-    const offset = this.pageIndex * (this.page.clientWidth + 64);
-    this.flow.style.transform = `translateX(-${offset}px)`;
+  /**
+   * Show a page. The position is measured with the page already in its
+   * final place — measuring during the turn animation reports the page
+   * being left, and that is what would be saved.
+   */
+  private setPage(index: number, animate: boolean): void {
+    const flow = this.flow;
+    if (!flow || !this.page) return;
+    const from = this.visualOffset();
+    this.pageIndex = Math.max(0, Math.min(this.pageCount - 1, index));
+    const target = `translateX(-${this.pageIndex * this.pageWidth()}px)`;
+    flow.style.transition = "none";
+    flow.style.transform = target;
+    void flow.offsetWidth;
+    this.announce();
+    const reduced =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (animate && !reduced && Math.abs(from - this.pageIndex * this.pageWidth()) > 1) {
+      flow.style.transform = `translateX(-${from}px)`;
+      void flow.offsetWidth;
+      flow.style.transition = "";
+      flow.style.transform = target;
+    } else {
+      flow.style.transition = "";
+    }
+  }
+
+  private goToBlock(blockIndex: number): void {
+    this.displayed = true;
+    this.reflow({ blockIndex, charOffset: 0 });
   }
 
   private announce(): void {
-    if (!this.notify) return;
-    const { blockIndex, charOffset } = this.firstVisiblePosition();
+    if (!this.notify || !this.displayed) return;
+    const position = this.firstVisiblePosition();
+    this.position = position;
+    const { blockIndex, charOffset } = position;
     const heading = this.nearestHeading(blockIndex);
+    const blockText = this.blocks[blockIndex]?.textContent ?? "";
+    const exact = takeGraphemes(blockText.substring(charOffset).trimStart(), 32);
     const envelope: LocatorEnvelope = {
       v: 1,
       engine: "text",
       primary: { blockIndex, charOffset },
-      textQuote: null,
+      textQuote: exact.trim()
+        ? {
+            exact,
+            prefix: takeGraphemes(blockText.substring(0, charOffset), 48, true),
+            suffix: "",
+          }
+        : null,
       coarse: {
         sectionTitle: heading,
         blockIndex,
@@ -162,7 +249,69 @@ export class TextEngine implements ReaderEngine {
         progress: this.pageCount > 1 ? this.pageIndex / (this.pageCount - 1) : 1,
       },
     };
-    this.notify(envelope, { sectionTitle: heading, pageIndex: this.pageIndex });
+    this.notify(envelope, {
+      sectionTitle: heading,
+      pageIndex: this.pageIndex,
+      chapter: this.chapterPosition(position),
+    });
+  }
+
+  // ---- chapters (top-level headings) ----
+
+  private buildChapters(): void {
+    this.blockOffsets = [];
+    let total = 0;
+    for (const block of this.blocks) {
+      this.blockOffsets.push(total);
+      total += (block.textContent ?? "").length;
+    }
+    this.totalChars = total;
+    const starts: number[] = [];
+    this.blocks.forEach((el, i) => {
+      if (/^H[12]$/.test(el.tagName)) starts.push(i);
+    });
+    if (starts[0] !== 0) starts.unshift(0);
+    this.chapters = starts.map((start, i) => ({
+      start,
+      end: starts[i + 1] ?? this.blocks.length,
+      title: /^H[12]$/.test(this.blocks[start]?.tagName ?? "")
+        ? this.blocks[start].textContent?.trim() || null
+        : null,
+    }));
+  }
+
+  private chapterPosition(position: TextPosition): ChapterPosition | null {
+    const chapter = this.chapters.find(
+      (c) => position.blockIndex >= c.start && position.blockIndex < c.end,
+    );
+    if (!chapter) return null;
+    const startChar = this.blockOffsets[chapter.start] ?? 0;
+    const endChar = this.blockOffsets[chapter.end] ?? this.totalChars;
+    const at = (this.blockOffsets[position.blockIndex] ?? 0) + position.charOffset;
+    const chars = Math.max(0, endChar - startChar);
+    return {
+      index: this.chapters.indexOf(chapter),
+      total: this.chapters.length,
+      title: chapter.title,
+      fraction: chars > 0 ? Math.min(1, Math.max(0, (at - startChar) / chars)) : 0,
+      chars,
+      charsLeft: Math.max(0, endChar - at),
+      bookCharsLeft: Math.max(0, this.totalChars - at),
+    };
+  }
+
+  extractText(): Promise<BookTextSection[]> {
+    return Promise.resolve(
+      this.chapters.map((chapter, index) => ({
+        index,
+        title: chapter.title,
+        text: this.blocks
+          .slice(chapter.start, chapter.end)
+          .map((el) => (el.textContent ?? "").replace(/\s+/gu, " ").trim())
+          .filter((t) => t.length > 0)
+          .join("\n"),
+      })),
+    );
   }
 
   private nearestHeading(blockIndex: number): string | null {
@@ -174,13 +323,12 @@ export class TextEngine implements ReaderEngine {
   }
 
   display(locator: LocatorEnvelope | null): Promise<void> {
-    if (locator?.engine === "text") {
-      const resolved = this.resolveTextLocator(locator);
-      this.reflow(resolved.blockIndex);
-      this.goToPosition(resolved.blockIndex, resolved.charOffset);
-    } else {
-      this.reflow(0);
-    }
+    this.displayed = true;
+    this.reflow(
+      locator?.engine === "text"
+        ? this.resolveTextLocator(locator)
+        : { blockIndex: 0, charOffset: 0 },
+    );
     return Promise.resolve();
   }
 
@@ -215,20 +363,14 @@ export class TextEngine implements ReaderEngine {
   }
 
   next(): Promise<void> {
-    if (this.pageIndex < this.pageCount - 1) {
-      this.pageIndex += 1;
-      this.applyTransform();
-      this.announce();
-    }
+    this.anchor = null;
+    if (this.pageIndex < this.pageCount - 1) this.setPage(this.pageIndex + 1, true);
     return Promise.resolve();
   }
 
   prev(): Promise<void> {
-    if (this.pageIndex > 0) {
-      this.pageIndex -= 1;
-      this.applyTransform();
-      this.announce();
-    }
+    this.anchor = null;
+    if (this.pageIndex > 0) this.setPage(this.pageIndex - 1, true);
     return Promise.resolve();
   }
 
@@ -253,6 +395,7 @@ export class TextEngine implements ReaderEngine {
     if (this.linkListener) this.flow?.removeEventListener("click", this.linkListener);
     if ("highlights" in CSS) CSS.highlights.delete("lectorium-text");
     this.resizeObserver?.disconnect();
+    if (this.fontListener) document.fonts?.removeEventListener?.("loadingdone", this.fontListener);
     this.page?.remove();
     this.page = null;
     this.flow = null;

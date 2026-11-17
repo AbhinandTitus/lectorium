@@ -3,9 +3,46 @@ import type { TypographySettings } from "../../../config/typography";
 import type { BookDetail } from "../../../services/types";
 import type { LocatorEnvelope } from "../locator";
 
+/**
+ * Where the reader is inside the current chapter. Transient UI context for
+ * the session target and "time left" — never stored as a position.
+ */
+export interface ChapterPosition {
+  /** ordinal of the chapter in reading order */
+  index: number;
+  /** number of chapters the engine knows about */
+  total: number;
+  title: string | null;
+  /** 0..1 through the chapter */
+  fraction: number;
+  /** characters of text in the chapter, when the engine can count them */
+  chars: number | null;
+  /** characters between the top of this page and the chapter's end */
+  charsLeft: number | null;
+  /** characters between the top of this page and the end of the book */
+  bookCharsLeft: number | null;
+}
+
 export interface LocatorContext {
   sectionTitle: string | null;
   pageIndex: number | null;
+  chapter?: ChapterPosition | null;
+}
+
+/** A chapter's plain text, for local indexing by the optional companion. */
+export interface BookTextSection {
+  /** matches ChapterPosition.index */
+  index: number;
+  title: string | null;
+  text: string;
+}
+
+/** How fixed-layout PDF pages are presented. */
+export interface PdfPresentation {
+  /** "themed" maps the page onto the reading theme; "original" leaves it */
+  colors: "themed" | "original";
+  /** whole page visible, or page width filled and scrolled */
+  fit: "page" | "width";
 }
 
 export interface EngineOpenArgs {
@@ -15,6 +52,7 @@ export interface EngineOpenArgs {
   typography: TypographySettings;
   theme: ThemeName;
   publisherStyles: boolean;
+  pdf: PdfPresentation;
   /** called on every settle so the shell can autosave */
   onLocatorChanged: (locator: LocatorEnvelope, context: LocatorContext) => void;
 }
@@ -97,8 +135,16 @@ export interface ReaderEngine {
   onExternalLink?(handler: (url: string) => void): void;
   /** switch EPUB between Lectorium's reader style and publisher CSS */
   applyPublisherStyles?(enabled: boolean): void;
+  /**
+   * Plain text by chapter, in reading order. Read locally; only the
+   * opt-in companion ever asks for it.
+   */
+  extractText?(): Promise<BookTextSection[]>;
 
   // --- PDF-only presentation controls (undefined on other engines) ---
+  applyPdfPresentation?(presentation: PdfPresentation): void;
+  /** true when a wheel gesture should scroll inside the page, not turn it */
+  consumesWheel?(deltaY: number): boolean;
   /** analyze suitability for the reversible Reflow view */
   getReflow?(): Promise<{
     confidence: "high" | "low";

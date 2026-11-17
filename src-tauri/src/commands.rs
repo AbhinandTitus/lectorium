@@ -504,3 +504,444 @@ pub fn save_settings(db: State<'_, Db>, payload: SettingsPayload) -> Result<(), 
     let conn = lock(&db)?;
     repo::save_settings(&conn, payload.version, &payload.json)
 }
+
+// ---------------------------------------------------------------------------
+// Opt-in network adapters. Both run entirely in Rust: the WebView's CSP still
+// allows no remote origin, and secrets never cross the IPC boundary outward.
+// ---------------------------------------------------------------------------
+
+use crate::companion;
+use crate::drive;
+use crate::secrets::{Secret, Secrets};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::Emitter;
+
+/// Guards against starting a second sign-in or sync while one is running.
+#[derive(Default)]
+pub struct Busy {
+    drive_auth: AtomicBool,
+    drive_sync: AtomicBool,
+}
+
+fn drive_shelf_dir(app: &AppHandle) -> Result<std::path::PathBuf, AppError> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("drive-shelf"))
+        .map_err(|_| AppError::Other("Could not find the app data folder.".into()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveStatus {
+    pub client_id: String,
+    pub has_client_secret: bool,
+    pub folder: String,
+    pub folder_name: Option<String>,
+    pub connected: bool,
+    pub account: Option<String>,
+    pub last_sync_at: Option<String>,
+    pub sync_on_launch: bool,
+    pub file_count: i64,
+    /// where downloaded books are kept on this computer
+    pub shelf_path: String,
+    pub syncing: bool,
+}
+
+#[tauri::command]
+pub fn drive_status(
+    app: AppHandle,
+    db: State<'_, Db>,
+    secrets: State<'_, Secrets>,
+    busy: State<'_, Busy>,
+) -> Result<DriveStatus, AppError> {
+    let config = drive::load_config(&db)?;
+    let file_count = {
+        let conn = lock(&db)?;
+        repo::drive_file_count(&conn)?
+    };
+    Ok(DriveStatus {
+        client_id: config.client_id,
+        has_client_secret: secrets.0.get(Secret::DriveClientCredential)?.is_some(),
+        folder: config.folder,
+        folder_name: config.folder_name,
+        connected: secrets.0.get(Secret::DriveRefreshToken)?.is_some(),
+        account: config.account,
+        last_sync_at: config.last_sync_at,
+        sync_on_launch: config.sync_on_launch,
+        file_count,
+        shelf_path: drive_shelf_dir(&app)?.to_string_lossy().into_owned(),
+        syncing: busy.drive_sync.load(Ordering::SeqCst),
+    })
+}
+
+/// Save the connector's non-secret settings. `client_secret` is stored in the
+/// OS credential vault when given; `None` leaves the stored one untouched.
+#[tauri::command]
+pub fn drive_save_config(
+    db: State<'_, Db>,
+    secrets: State<'_, Secrets>,
+    client_id: String,
+    client_secret: Option<String>,
+    folder: String,
+    sync_on_launch: bool,
+) -> Result<(), AppError> {
+    let mut config = drive::load_config(&db)?;
+    let client_id = client_id.trim().to_string();
+    let folder = folder.trim().to_string();
+    if client_id.len() > 200 || folder.chars().count() > 400 {
+        return Err(AppError::Other("That value is too long.".into()));
+    }
+    if folder != config.folder {
+        config.folder_id = None;
+        config.folder_name = None;
+    }
+    config.client_id = client_id;
+    config.folder = folder;
+    config.sync_on_launch = sync_on_launch;
+    drive::save_config(&db, &config)?;
+    if let Some(secret) = client_secret {
+        if secret.trim().is_empty() {
+            secrets.0.delete(Secret::DriveClientCredential)?;
+        } else {
+            secrets
+                .0
+                .set(Secret::DriveClientCredential, secret.trim())?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "phase", rename_all = "camelCase")]
+enum DriveAuthEvent {
+    Waiting,
+    Connected { account: Option<String> },
+    Failed { message: String },
+}
+
+fn emit_auth(app: &AppHandle, event: &DriveAuthEvent) {
+    let _ = app.emit("drive:auth", event);
+}
+
+/// Start the Google sign-in in the reader's own browser. Returns at once;
+/// the outcome arrives as a `drive:auth` event.
+#[tauri::command]
+pub fn drive_connect(
+    app: AppHandle,
+    db: State<'_, Db>,
+    busy: State<'_, Busy>,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+    let config = drive::load_config(&db)?;
+    if busy.drive_auth.swap(true, Ordering::SeqCst) {
+        return Err(AppError::Other(
+            "A Google sign-in is already open in your browser.".into(),
+        ));
+    }
+    let endpoints = drive::Endpoints::default();
+    let session = match drive::begin_auth(&endpoints, &config.client_id) {
+        Ok(session) => session,
+        Err(error) => {
+            busy.drive_auth.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+    };
+    if app
+        .opener()
+        .open_url(session.url.clone(), None::<&str>)
+        .is_err()
+    {
+        busy.drive_auth.store(false, Ordering::SeqCst);
+        return Err(AppError::Other(
+            "Lectorium could not open your browser for the Google sign-in.".into(),
+        ));
+    }
+    emit_auth(&app, &DriveAuthEvent::Waiting);
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<Option<String>, AppError> {
+            let code = drive::wait_for_code(&session, std::time::Duration::from_secs(300))?;
+            let db = app.state::<Db>();
+            let secrets = app.state::<Secrets>();
+            let client_secret = secrets.0.get(Secret::DriveClientCredential)?;
+            let (access, refresh) = drive::exchange_code(
+                &endpoints,
+                &session,
+                &config.client_id,
+                client_secret.as_deref(),
+                &code,
+            )?;
+            secrets.0.set(Secret::DriveRefreshToken, &refresh)?;
+            let account = drive::account_email(&endpoints, &access).unwrap_or(None);
+            let mut config = drive::load_config(&db)?;
+            config.account = account.clone();
+            drive::save_config(&db, &config)?;
+            Ok(account)
+        })();
+        app.state::<Busy>()
+            .drive_auth
+            .store(false, Ordering::SeqCst);
+        match outcome {
+            Ok(account) => emit_auth(&app, &DriveAuthEvent::Connected { account }),
+            Err(error) => emit_auth(
+                &app,
+                &DriveAuthEvent::Failed {
+                    message: error.to_string(),
+                },
+            ),
+        }
+    });
+    Ok(())
+}
+
+/// Forget the sign-in. Books already downloaded stay on this computer.
+#[tauri::command]
+pub fn drive_disconnect(db: State<'_, Db>, secrets: State<'_, Secrets>) -> Result<(), AppError> {
+    secrets.0.delete(Secret::DriveRefreshToken)?;
+    let mut config = drive::load_config(&db)?;
+    config.account = None;
+    drive::save_config(&db, &config)
+}
+
+fn spawn_drive_sync(app: AppHandle) -> Result<(), AppError> {
+    let shelf = drive_shelf_dir(&app)?;
+    if app.state::<Busy>().drive_sync.swap(true, Ordering::SeqCst) {
+        return Err(AppError::Other("Google Drive is already syncing.".into()));
+    }
+    std::thread::spawn(move || {
+        let result = {
+            let db = app.state::<Db>();
+            let secrets = app.state::<Secrets>();
+            let emitter = app.clone();
+            let mut on_event = move |event: drive::SyncEvent| {
+                let _ = emitter.emit("drive:sync", &event);
+            };
+            drive::run_sync(
+                &db,
+                secrets.0.as_ref(),
+                &drive::Endpoints::default(),
+                &shelf,
+                &mut on_event,
+            )
+        };
+        app.state::<Busy>()
+            .drive_sync
+            .store(false, Ordering::SeqCst);
+        match result {
+            Ok(_) => {
+                // The shelf is an ordinary library folder from here on.
+                let registered = (|| -> Result<(i64, std::path::PathBuf), AppError> {
+                    let canonical = std::fs::canonicalize(&shelf)?;
+                    let db = app.state::<Db>();
+                    let conn = db.conn.lock().map_err(|_| {
+                        AppError::Other("Lectorium's database is busy. Please try again.".into())
+                    })?;
+                    let id = repo::add_root(&conn, &canonical.to_string_lossy(), "Google Drive")?;
+                    Ok((id, canonical))
+                })();
+                if let Ok((id, canonical)) = registered {
+                    scanner::spawn_scan(app.clone(), id, canonical);
+                }
+            }
+            Err(error) => {
+                let _ = app.emit(
+                    "drive:sync",
+                    &drive::SyncEvent::Failed {
+                        message: error.to_string(),
+                    },
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Mirror the Drive folder now. Progress arrives as `drive:sync` events.
+#[tauri::command]
+pub fn drive_sync(app: AppHandle) -> Result<(), AppError> {
+    spawn_drive_sync(app)
+}
+
+/// Called once at startup; does nothing unless the reader opted in.
+pub fn sync_drive_on_launch(app: &AppHandle) {
+    let wanted = (|| -> Result<bool, AppError> {
+        let db = app.state::<Db>();
+        let secrets = app.state::<Secrets>();
+        let config = drive::load_config(&db)?;
+        Ok(config.sync_on_launch && secrets.0.get(Secret::DriveRefreshToken)?.is_some())
+    })()
+    .unwrap_or(false);
+    if wanted {
+        let _ = spawn_drive_sync(app.clone());
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionStatus {
+    pub has_key: bool,
+    pub model: String,
+}
+
+#[tauri::command]
+pub fn companion_status(
+    db: State<'_, Db>,
+    secrets: State<'_, Secrets>,
+) -> Result<CompanionStatus, AppError> {
+    Ok(CompanionStatus {
+        has_key: secrets.0.get(Secret::GeminiApiKey)?.is_some(),
+        model: companion::model(&db)?,
+    })
+}
+
+/// Store (or, with `None`/empty, remove) the reader's Gemini API key. It goes
+/// straight to the OS credential vault and is never returned to the WebView.
+#[tauri::command]
+pub fn companion_set_key(secrets: State<'_, Secrets>, key: Option<String>) -> Result<(), AppError> {
+    match key.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => {
+            if value.len() > 200 || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(AppError::Other(
+                    "That does not look like an API key.".into(),
+                ));
+            }
+            secrets.0.set(Secret::GeminiApiKey, value)
+        }
+        _ => secrets.0.delete(Secret::GeminiApiKey),
+    }
+}
+
+#[tauri::command]
+pub fn companion_set_model(db: State<'_, Db>, model: String) -> Result<(), AppError> {
+    companion::set_model(&db, &model)
+}
+
+async fn blocking<T, F>(task: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| AppError::Other("That request did not finish. Please try again.".into()))?
+}
+
+/// List the text models this key can use. Also serves as "check my key".
+#[tauri::command]
+pub async fn companion_models(app: AppHandle) -> Result<Vec<companion::ModelInfo>, AppError> {
+    blocking(move || {
+        let secrets = app.state::<Secrets>();
+        companion::list_models(&companion::Endpoint::default(), secrets.0.as_ref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn book_text_status(
+    db: State<'_, Db>,
+    book_id: String,
+) -> Result<Option<repo::TextIndexStatus>, AppError> {
+    let conn = lock(&db)?;
+    repo::text_index_status(&conn, &book_id)
+}
+
+/// Index a book's text for local search. Nothing leaves the computer here.
+#[tauri::command]
+pub async fn index_book_text(
+    app: AppHandle,
+    book_id: String,
+    sections: Vec<repo::TextSection>,
+) -> Result<companion::IndexReport, AppError> {
+    if sections.len() > 5000
+        || sections.iter().map(|s| s.text.len()).sum::<usize>() > 64 * 1024 * 1024
+    {
+        return Err(AppError::Other("This book is too large to index.".into()));
+    }
+    blocking(move || {
+        let db = app.state::<Db>();
+        companion::index_book(&db, &book_id, &sections)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn companion_chapter_notes(
+    app: AppHandle,
+    book_id: String,
+    chapter_index: i64,
+    fraction: f64,
+) -> Result<repo::CompanionNote, AppError> {
+    blocking(move || {
+        let db = app.state::<Db>();
+        let secrets = app.state::<Secrets>();
+        companion::chapter_notes(
+            &db,
+            secrets.0.as_ref(),
+            &companion::Endpoint::default(),
+            &book_id,
+            chapter_index,
+            fraction,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn companion_brief(
+    app: AppHandle,
+    book_id: String,
+    chapter_index: i64,
+    fraction: f64,
+) -> Result<repo::CompanionNote, AppError> {
+    blocking(move || {
+        let db = app.state::<Db>();
+        let secrets = app.state::<Secrets>();
+        companion::brief(
+            &db,
+            secrets.0.as_ref(),
+            &companion::Endpoint::default(),
+            &book_id,
+            chapter_index,
+            fraction,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn companion_ask(
+    app: AppHandle,
+    book_id: String,
+    question: String,
+    chapter_index: i64,
+    fraction: f64,
+) -> Result<companion::Answer, AppError> {
+    blocking(move || {
+        let db = app.state::<Db>();
+        let secrets = app.state::<Secrets>();
+        companion::ask(
+            &db,
+            secrets.0.as_ref(),
+            &companion::Endpoint::default(),
+            &book_id,
+            &question,
+            chapter_index,
+            fraction,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn list_companion_notes(
+    db: State<'_, Db>,
+    book_id: String,
+) -> Result<Vec<repo::CompanionNote>, AppError> {
+    let conn = lock(&db)?;
+    repo::list_companion_notes(&conn, &book_id)
+}
+
+#[tauri::command]
+pub fn delete_companion_note(db: State<'_, Db>, id: String) -> Result<(), AppError> {
+    let conn = lock(&db)?;
+    repo::delete_companion_note(&conn, &id)
+}

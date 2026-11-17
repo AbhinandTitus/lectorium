@@ -119,8 +119,28 @@
   opacity: 0;
 }
 
+/* PDF pages sit in a scroller: inert when the whole page fits, vertical
+   when the page fills the width. */
+.pdf-scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.pdf-scroll.is-fit-width {
+  align-items: flex-start;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-hairline) transparent;
+}
+
 .pdf-page-wrap {
   position: relative;
+  flex-shrink: 0;
+  margin: 0 auto;
 }
 
 .pdf-reflow {

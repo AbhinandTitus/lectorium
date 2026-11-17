@@ -1,9 +1,15 @@
 mod commands;
+mod companion;
 mod db;
+mod drive;
 mod error;
 mod library;
 mod logging;
+mod net;
 mod protocol;
+mod secrets;
+#[cfg(test)]
+mod testserver;
 
 use tauri::Manager;
 
@@ -42,6 +48,8 @@ pub fn run() {
             let database = db::open(&data_dir)?;
             tracing::info!(db = ?database.db_path, "database ready");
             app.manage(database);
+            app.manage(secrets::Secrets(secrets::platform_store()));
+            app.manage(commands::Busy::default());
 
             // Catch files that changed while the app was closed: quietly
             // rescan every granted root on startup (fingerprint triage makes
@@ -59,6 +67,11 @@ pub fn run() {
                     );
                 }
             }
+
+            // The reader's standing choice, off by default: look at their
+            // Drive folder once per launch. Without it, nothing here ever
+            // touches the network on its own.
+            commands::sync_drive_on_launch(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,6 +107,22 @@ pub fn run() {
             commands::list_backups,
             commands::restore_backup,
             commands::import_reading_data,
+            commands::drive_status,
+            commands::drive_save_config,
+            commands::drive_connect,
+            commands::drive_disconnect,
+            commands::drive_sync,
+            commands::companion_status,
+            commands::companion_set_key,
+            commands::companion_set_model,
+            commands::companion_models,
+            commands::book_text_status,
+            commands::index_book_text,
+            commands::companion_chapter_notes,
+            commands::companion_brief,
+            commands::companion_ask,
+            commands::list_companion_notes,
+            commands::delete_companion_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

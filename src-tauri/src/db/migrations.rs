@@ -12,10 +12,11 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial schema",
-    sql: r#"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial schema",
+        sql: r#"
 CREATE TABLE library_roots (
     id INTEGER PRIMARY KEY,
     canonical_path TEXT NOT NULL UNIQUE,
@@ -125,4 +126,79 @@ CREATE TABLE settings (
     json TEXT NOT NULL
 );
 "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "drive shelf, book text index, companion notes",
+        sql: r#"
+-- Small durable facts owned by the Rust side (connector state, never secrets).
+CREATE TABLE app_kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Files mirrored from the reader's chosen Google Drive folder.
+CREATE TABLE drive_files (
+    file_id TEXT PRIMARY KEY,           -- Drive file id
+    name TEXT NOT NULL,                 -- name as shown in Drive
+    md5 TEXT,                           -- Drive md5Checksum at last download
+    modified_time TEXT,
+    size_bytes INTEGER,
+    local_path TEXT NOT NULL,           -- downloaded copy inside the app data folder
+    synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    in_drive INTEGER NOT NULL DEFAULT 1 -- 0 once the file is gone from the folder
+);
+
+-- Plain text of a book by chapter, cut into passages. Built locally from the
+-- file; searched locally; rebuildable at any time.
+CREATE TABLE book_text_index (
+    book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    chapter_count INTEGER NOT NULL,
+    total_chars INTEGER NOT NULL,
+    indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE book_chunks (
+    id INTEGER PRIMARY KEY,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_index INTEGER NOT NULL,
+    chapter_title TEXT,
+    seq INTEGER NOT NULL,               -- order within the chapter
+    char_start INTEGER NOT NULL,        -- offset of this passage in the chapter text
+    text TEXT NOT NULL
+);
+CREATE INDEX idx_book_chunks_place ON book_chunks(book_id, chapter_index, seq);
+
+-- Trigram index: substring matching that works for every script, including
+-- Malayalam, without a language-specific stemmer.
+CREATE VIRTUAL TABLE book_chunks_fts USING fts5(
+    text,
+    content='book_chunks',
+    content_rowid='id',
+    tokenize='trigram'
+);
+CREATE TRIGGER book_chunks_ai AFTER INSERT ON book_chunks BEGIN
+    INSERT INTO book_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER book_chunks_ad AFTER DELETE ON book_chunks BEGIN
+    INSERT INTO book_chunks_fts(book_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+
+-- Notes written by the optional companion. Kept apart from the reader's own
+-- annotations: nothing here is ever presented as the reader's writing.
+CREATE TABLE companion_notes (
+    id TEXT PRIMARY KEY,                -- UUID
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('chapter','brief')),
+    chapter_index INTEGER NOT NULL,
+    chapter_title TEXT,
+    read_fraction REAL NOT NULL DEFAULT 1, -- how much of the chapter the note covers
+    body_json TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE (book_id, kind, chapter_index)
+);
+"#,
+    },
+];
